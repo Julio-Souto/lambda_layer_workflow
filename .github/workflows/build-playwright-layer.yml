@@ -31,16 +31,17 @@ jobs:
           rm -rf out || true
           mkdir -p out/python/lib/python3.12/site-packages
 
-          # Ejecutar un contenedor con la imagen oficial Lambda Python 3.12 (tiene python & pip alineados)
+          # Ejecutar un contenedor con la imagen oficial Lambda Python 3.12
+          # --entrypoint /bin/bash permite ejecutar comandos arbitrarios dentro del container
           docker run --rm \
+            --entrypoint /bin/bash \
             -v "${{ github.workspace }}/wheelhouse":/wheels \
             -v "${{ github.workspace }}/out":/out \
             -v "${{ github.workspace }}/requirements.txt":/requirements.txt \
-            public.ecr.aws/lambda/python:3.12 /bin/bash -lc "\
+            public.ecr.aws/lambda/python:3.12 -lc "\
               set -e; \
-              # actualizar repos y herramientas
+              # actualizar repos y herramientas (no todos los paquetes están en la imagen base, toleramos fallos)
               yum -y update || true; \
-              # instalar paquetes del sistema que suelen necesitar Chromium/Playwright (sin libXss problemático)
               yum -y install -y \
                 python3-pip \
                 python3-devel \
@@ -62,10 +63,8 @@ jobs:
                 cups-libs \
                 dbus-glib || true; \
               python3 -m pip install --upgrade pip setuptools wheel; \
-              # instalar desde wheels generados (no-index)
               python3 -m pip install --no-index --find-links=/wheels --no-deps \
                 --target=/out/python/lib/python3.12/site-packages -r /requirements.txt; \
-              # indicar donde se deben descargar los browsers dentro de /out
               export PLAYWRIGHT_BROWSERS_PATH=/out/.cache/ms-playwright; \
               export PYTHONPATH=/out/python/lib/python3.12/site-packages; \
               PYTHONPATH=$PYTHONPATH PLAYWRIGHT_BROWSERS_PATH=$PLAYWRIGHT_BROWSERS_PATH \
