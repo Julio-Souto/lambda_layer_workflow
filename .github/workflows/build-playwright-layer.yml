@@ -44,19 +44,25 @@ jobs:
               yum -y update || true; \
               yum -y install -y python3-pip python3-devel tar xz unzip fontconfig freetype freetype-devel glibc-langpack-en \
                 libX11 libXcomposite libXcursor libXdamage libXrandr libXtst libXrender libxcb libxshmfence libxkbcommon \
-                atk gtk3 pango alsa-lib cups-libs dbus-glib || true; \
+                atk gtk3 pango alsa-lib cups-libs dbus-glib \
+                libnss3 nspr atk at-spi2-atk cups-libs libdrm dbus-glib libXScrnSaver cairo \
+                || true; \
               python3 -m pip install --upgrade pip setuptools wheel || true; \
-              # instalar todas las dependencias de tu requirements
+              # instalar Playwright PRIMERO en el sistema
+              python3 -m pip install playwright || true; \
+              # configurar variables de entorno para evitar la instalación automática de dependencias
+              export PLAYWRIGHT_SKIP_BROWSERS_DOWNLOAD=0; \
+              export PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS=true; \
+              # instalar Chromium SIN --with-deps (ya instalamos las dependencias manualmente)
+              export PLAYWRIGHT_BROWSERS_PATH=/tmp/ms-playwright; \
+              python3 -m playwright install chromium 2>&1 | tee /tmp/playwright-install.log; \
+              # ahora instalar dependencias en /out
               python3 -m pip install --no-index --find-links=/wheels --no-deps --target=/out/python/lib/python3.12/site-packages -r /requirements.txt || true; \
-              # instalar Playwright CORRECTAMENTE en el sistema
-              python3 -m pip install --upgrade playwright || true; \
+              python3 -m pip install playwright --target=/out/python/lib/python3.12/site-packages || true; \
+              # copiar los navegadores instalados
+              mkdir -p /out/.cache/ms-playwright; \
+              cp -r /tmp/ms-playwright/* /out/.cache/ms-playwright/ 2>/dev/null || true; \
               chmod -R a+rwX /out || true; \
-              # instalar Chromium con dependencias dentro de la layer
-              export PLAYWRIGHT_BROWSERS_PATH=/out/.cache/ms-playwright; \
-              # usar playwright del sistema para la instalación
-              python3 -m playwright install --with-deps chromium 2>&1 | tee /out/playwright-install.log; \
-              # ahora copiar playwright al directorio de salida
-              python3 -m pip install --upgrade playwright --target=/out/python/lib/python3.12/site-packages || true; \
               chmod -R a+rX /out || true; \
               # forzar permisos ejecutables
               if find /out -type f -name headless_shell | grep -q headless_shell; then \
