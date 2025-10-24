@@ -24,13 +24,16 @@ jobs:
             quay.io/pypa/manylinux_2_28_x86_64:latest /bin/bash -lc "\
               /opt/python/cp312-cp312/bin/pip wheel --no-deps --wheel-dir=/wheels -r /requirements.txt && \
               chown -R $(id -u):$(id -g) /wheels"
-
-      - name: Build layer in Lambda Python 3.12 image
+      - name: Prepare out dir
         run: |
-          set -e
           rm -rf out || true
           mkdir -p out/python/lib/python3.12/site-packages
+          # preserve ownership so docker can write (runner user)
+          chmod -R a+rwX out || true
 
+      - name: Build layer in Lambda Python 3.12 image (install packages + browsers)
+        run: |
+          set -e
           # Ejecutar un contenedor con la imagen oficial Lambda Python 3.12
           # --entrypoint /bin/bash permite ejecutar comandos arbitrarios dentro del container
           docker run --rm \
@@ -40,37 +43,69 @@ jobs:
             -v "${{ github.workspace }}/requirements.txt":/requirements.txt \
             public.ecr.aws/lambda/python:3.12 -lc "\
               set -e; \
-              # actualizar repos y herramientas (no todos los paquetes están en la imagen base, toleramos fallos)
+              echo '=== inside lambda image: preparing system packages ==='; \
+              # instalar las libs del sistema que Chromium suele necesitar (ignoramos fallos parciales)
               yum -y update || true; \
-              yum -y install -y \
-                python3-pip \
-                python3-devel \
-                tar xz unzip fontconfig freetype freetype-devel glibc-langpack-en \
-                libX11 \
-                libXcomposite \
-                libXcursor \
-                libXdamage \
-                libXrandr \
-                libXtst \
-                libXrender \
-                libxcb \
-                libxshmfence \
-                libxkbcommon \
-                atk \
-                gtk3 \
-                pango \
-                alsa-lib \
-                cups-libs \
-                dbus-glib || true; \
-              python3 -m pip install --upgrade pip setuptools wheel; \
-              python3 -m pip install --no-index --find-links=/wheels --no-deps \
-                --target=/out/python/lib/python3.12/site-packages -r /requirements.txt; \
+              yum -y install -y python3-pip python3-devel tar xz unzip fontconfig freetype freetype-devel glibc-langpack-en \
+                libX11 libXcomposite libXcursor libXdamage libXrandr libXtst libXrender libxcb libxshmfence libxkbcommon \
+                atk gtk3 pango alsa-lib cups-libs dbus-glib || true; \
+              echo '=== upgrade pip tools ==='; \
+              python3 -m pip install --upgrade pip setuptools wheel || true; \
+              echo '=== install python packages from wheelhouse into /out ==='; \
+              # instalar desde wheels (si faltan algunos wheels, pip podrá descargar si se permite; aquí usamos --no-deps intencionadamente)
+              python3 -m pip install --no-index --find-links=/wheels --no-deps --target=/out/python/lib/python3.12/site-packages -r /requirements.txt || true; \
+              # Si playwright no quedó instalado por wheels, instalarlo temporalmente en /out
+              if [ ! -d /out/python/lib/python3.12/site-packages/playwright* ]; then \
+                echo 'playwright no está en /out, instalando desde PyPI en /out (temporal)'; \
+                python3 -m pip install --no-deps --target=/out/python/lib/python3.12/site-packages playwright || true; \
+              fi; \
+              echo '=== ensure permissions ==='; \
+              chmod -R a+rwX /out || true; \
+              # Forzar la ruta donde Playwright colocará los browsers dentro de /out
               export PLAYWRIGHT_BROWSERS_PATH=/out/.cache/ms-playwright; \
               export PYTHONPATH=/out/python/lib/python3.12/site-packages; \
+              echo 'PLAYWRIGHT_BROWSERS_PATH='${PLAYWRIGHT_BROWSERS_PATH}; \
+              # Ejecutar playwright install y guardar log en /out/playwright-install.log
+              echo '=== running playwright install --with-deps chromium ==='; \
               PYTHONPATH=$PYTHONPATH PLAYWRIGHT_BROWSERS_PATH=$PLAYWRIGHT_BROWSERS_PATH \
-                python3 -m playwright install --with-deps chromium 2>&1 | tee /tmp/playwright-install.log; \
-              echo '--- list /out ---'; ls -la /out || true; \
+                python3 -m playwright install --with-deps chromium 2>&1 | tee /out/playwright-install.log; \
+              echo '=== post-install: fix perms and ensure executables are executable ==='; \
+              chmod -R a+rX /out || true; \
+              # forzar binarios ejecutables (buscar headless_shell/chrome-linux etc)
+              if find /out -type f -name headless_shell | grep -q headless_shell; then \
+                find /out -type f -name headless_shell -exec chmod +x {} \\; || true; \
+              fi; \
+              if find /out -type f -name chrome | grep -q chrome; then \
+                find /out -type f -name chrome -exec chmod +x {} \\; || true; \
+              fi; \
+              echo '=== done inside container ==='; \
               chown -R 1000:1000 /out || true"
+
+      - name: Post-process out: move browsers if installed inside site-packages
+        run: |
+          # Algunas instalaciones colocan navegadores dentro de site-packages/playwright/...
+          # Si encontramos navegadores ahí, los movemos a /out/.cache/ms-playwright para que Lambda los encuentre en /opt/.cache/...
+          set -e
+          if [ -d out/python/lib/python3.12/site-packages/playwright ]; then
+            echo "playwright package exists in site-packages, checking for browsers inside it..."
+            # buscar posibles carpetas grandes dentro de site-packages/playwright que contengan chrome-linux
+            candidates=$(find out/python/lib/python3.12/site-packages/playwright -maxdepth 4 -type d -name "chrome-linux" -print || true)
+            if [ -n "$candidates" ]; then
+              mkdir -p out/.cache/ms-playwright
+              for d in $candidates; do
+                echo "Moving browsers from $d to out/.cache/ms-playwright"
+                # mover la carpeta contenedora (dos niveles hacia arriba normalmente)
+                src=$(dirname "$(dirname "$d")")
+                cp -a "$src"/* out/.cache/ms-playwright/ || true
+              done
+              # asegurar permisos
+              chmod -R a+rX out/.cache/ms-playwright || true
+            else
+              echo "No chrome-linux found under site-packages/playwright"
+            fi
+          else
+            echo "No playwright package present in site-packages"
+          fi
 
       - name: Show out size and sample files
         run: |
@@ -79,26 +114,19 @@ jobs:
           echo "=== top-level out files ==="
           ls -la out || true
           echo "=== site-packages sample ==="
-          ls -la out/python/lib/python3.12/site-packages | head -n 80 || true
+          ls -la out/python/lib/python3.12/site-packages | head -n 160 || true
 
           echo "=== Playwright install log (if exists) ==="
-          if [ -f out/.cache/ms-playwright/install.log ]; then
+          if [ -f out/playwright-install.log ]; then
             echo "---- begin install.log ----"
-            tail -n 400 out/.cache/ms-playwright/install.log || true
+            tail -n 400 out/playwright-install.log || true
             echo "---- end install.log ----"
           else
-            echo "No se encontró out/.cache/ms-playwright/install.log en el workspace."
-            # Mostrar posibles archivos en la carpeta .cache para diagnosticar
+            echo "No se encontró out/playwright-install.log en el workspace."
             if [ -d out/.cache/ms-playwright ]; then
-              echo "Contenido de out/.cache/ms-playwright:"
-              ls -la out/.cache/ms-playwright || true
+              echo "Contenido de out/.cache/ms-playwright (top):"
+              ls -la out/.cache/ms-playwright | head -n 40 || true
             fi
-          fi
-
-          # Mostrar también cualquier log temporal que pudiéramos haber creado en /out/tmp
-          if [ -f out/tmp/playwright-install.log ]; then
-            echo "---- tail out/tmp/playwright-install.log ----"
-            tail -n 400 out/tmp/playwright-install.log || true
           fi
 
       - name: Zip layer
