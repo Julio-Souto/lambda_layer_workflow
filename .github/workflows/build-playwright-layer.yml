@@ -1,10 +1,9 @@
 name: Build Playwright Layer (AL2023 / Python 3.12)
 
 on:
-  workflow_dispatch:      # lanzar manualmente desde Actions UI
+  workflow_dispatch:
   push:
-    branches:
-      - main
+    branches: [ main ]
 
 jobs:
   build-layer:
@@ -13,48 +12,74 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Setup Python (for wheel building helper)
+      - name: Setup Python (host, for helper steps)
         uses: actions/setup-python@v4
         with:
           python-version: "3.12"
 
-      # 1) Build wheels in manylinux_2_28 container (produces manylinux-compatible wheels)
-      - name: Create wheels (manylinux_2_28)
+      - name: Create wheelhouse (manylinux_2_28)
         run: |
           mkdir -p wheelhouse
-          # Run the manylinux container to build wheels for cp312
           docker run --rm -v "${{ github.workspace }}/wheelhouse":/wheels -v "${{ github.workspace }}/requirements.txt":/requirements.txt \
             quay.io/pypa/manylinux_2_28_x86_64:latest /bin/bash -lc "\
               /opt/python/cp312-cp312/bin/pip wheel --no-deps --wheel-dir=/wheels -r /requirements.txt && \
               chown -R $(id -u):$(id -g) /wheels"
-        # nota: este paso usa docker dentro del runner (Actions runner tiene Docker disponible)
 
-      # 2) Use amazonlinux container to install wheels into /out and run playwright install
-      - name: Build layer in Amazon Linux 2023
+      - name: Build layer in Lambda Python 3.12 image
         run: |
-          # crear carpeta de salida
+          set -e
           rm -rf out || true
           mkdir -p out/python/lib/python3.12/site-packages
-          # ejecutar amazonlinux container que copiará wheelhouse y requirements
-          docker run --rm -v "${{ github.workspace }}/wheelhouse":/wheels -v "${{ github.workspace }}/out":/out -v "${{ github.workspace }}/requirements.txt":/requirements.txt \
-            public.ecr.aws/amazonlinux/amazonlinux:2023 /bin/bash -lc "\
-              set -e; \
-              dnf -y install python3 python3-pip python3-devel tar xz unzip fontconfig freetype glibc-langpack-en libX11 gcc gcc-c++ make libXcomposite libXcursor libXdamage libXrandr libXss libXtst dbus-glib gtk3 alsa-lib pango || true; \
-              python3 -m pip install --upgrade pip setuptools wheel; \
-              python3 -m pip install --no-index --find-links=/wheels --no-deps --target=/out/python/lib/python3.12/site-packages -r /requirements.txt; \
-              export PLAYWRIGHT_BROWSERS_PATH=/out/.cache/ms-playwright; \
-              # Asegurarse de que utilizamos la instalación que acabamos de colocar:
-              PYTHONPATH=/out/python/lib/python3.12/site-packages PLAYWRIGHT_BROWSERS_PATH=/out/.cache/ms-playwright \
-                python3 -m playwright install --with-deps chromium; \
-              chown -R 1000:1000 /out || true"
-        # este paso ejecuta amazonlinux:2023 dentro de Docker en runner para instalar las deps del SO y bajar Chromium
 
-      - name: List out contents
+          # Ejecutar un contenedor con la imagen oficial Lambda Python 3.12 (tiene python & pip alineados)
+          docker run --rm \
+            -v "${{ github.workspace }}/wheelhouse":/wheels \
+            -v "${{ github.workspace }}/out":/out \
+            -v "${{ github.workspace }}/requirements.txt":/requirements.txt \
+            public.ecr.aws/lambda/python:3.12 /bin/bash -lc "\
+              set -e; \
+              # actualizar repos y herramientas
+              yum -y update || true; \
+              # instalar paquetes del sistema que suelen necesitar Chromium/Playwright (sin libXss problemático)
+              yum -y install -y \
+                python3-pip \
+                python3-devel \
+                tar xz unzip fontconfig freetype freetype-devel glibc-langpack-en \
+                libX11 \
+                libXcomposite \
+                libXcursor \
+                libXdamage \
+                libXrandr \
+                libXtst \
+                libXrender \
+                libxcb \
+                libxshmfence \
+                libxkbcommon \
+                atk \
+                gtk3 \
+                pango \
+                alsa-lib \
+                cups-libs \
+                dbus-glib || true; \
+              python3 -m pip install --upgrade pip setuptools wheel; \
+              # instalar desde wheels generados (no-index)
+              python3 -m pip install --no-index --find-links=/wheels --no-deps \
+                --target=/out/python/lib/python3.12/site-packages -r /requirements.txt; \
+              # indicar donde se deben descargar los browsers dentro de /out
+              export PLAYWRIGHT_BROWSERS_PATH=/out/.cache/ms-playwright; \
+              export PYTHONPATH=/out/python/lib/python3.12/site-packages; \
+              PYTHONPATH=$PYTHONPATH PLAYWRIGHT_BROWSERS_PATH=$PLAYWRIGHT_BROWSERS_PATH \
+                python3 -m playwright install --with-deps chromium 2>&1 | tee /tmp/playwright-install.log; \
+              echo '--- list /out ---'; ls -la /out || true; \
+              chown -R 1000:1000 /out || true"
+
+      - name: Show out size and sample files
         run: |
-          echo "size of out:"
           du -sh out || true
-          ls -la out
-          ls -la out/python/lib/python3.12/site-packages | head -n 40 || true
+          ls -la out | head -n 40 || true
+          ls -la out/python/lib/python3.12/site-packages | head -n 80 || true
+          echo "Playwright install log (tail):"
+          docker run --rm -v "${{ github.workspace }}/out":/out public.ecr.aws/lambda/python:3.12 /bin/bash -lc "if [ -f /out/.cache/ms-playwright/install.log ]; then tail -n 200 /out/.cache/ms-playwright/install.log; fi || true"
 
       - name: Zip layer
         run: |
