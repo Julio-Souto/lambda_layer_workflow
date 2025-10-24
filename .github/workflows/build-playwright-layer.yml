@@ -74,11 +74,32 @@ jobs:
 
       - name: Show out size and sample files
         run: |
+          echo "=== Size of out directory ==="
           du -sh out || true
-          ls -la out | head -n 40 || true
+          echo "=== top-level out files ==="
+          ls -la out || true
+          echo "=== site-packages sample ==="
           ls -la out/python/lib/python3.12/site-packages | head -n 80 || true
-          echo "Playwright install log (tail):"
-          docker run --rm -v "${{ github.workspace }}/out":/out public.ecr.aws/lambda/python:3.12 /bin/bash -lc "if [ -f /out/.cache/ms-playwright/install.log ]; then tail -n 200 /out/.cache/ms-playwright/install.log; fi || true"
+
+          echo "=== Playwright install log (if exists) ==="
+          if [ -f out/.cache/ms-playwright/install.log ]; then
+            echo "---- begin install.log ----"
+            tail -n 400 out/.cache/ms-playwright/install.log || true
+            echo "---- end install.log ----"
+          else
+            echo "No se encontró out/.cache/ms-playwright/install.log en el workspace."
+            # Mostrar posibles archivos en la carpeta .cache para diagnosticar
+            if [ -d out/.cache/ms-playwright ]; then
+              echo "Contenido de out/.cache/ms-playwright:"
+              ls -la out/.cache/ms-playwright || true
+            fi
+          fi
+
+          # Mostrar también cualquier log temporal que pudiéramos haber creado en /out/tmp
+          if [ -f out/tmp/playwright-install.log ]; then
+            echo "---- tail out/tmp/playwright-install.log ----"
+            tail -n 400 out/tmp/playwright-install.log || true
+          fi
 
       - name: Zip layer
         run: |
