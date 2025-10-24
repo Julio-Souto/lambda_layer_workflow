@@ -81,7 +81,7 @@ jobs:
               echo '=== done inside container ==='; \
               chown -R 1000:1000 /out || true"
 
-      - name: Post-process out: move browsers if installed inside site-packages
+      - name: Post-process out move browsers if installed inside site-packages
         run: |
           # Algunas instalaciones colocan navegadores dentro de site-packages/playwright/...
           # Si encontramos navegadores ahí, los movemos a /out/.cache/ms-playwright para que Lambda los encuentre en /opt/.cache/...
