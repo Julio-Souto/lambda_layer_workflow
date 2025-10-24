@@ -1,0 +1,70 @@
+name: Build Playwright Layer (AL2023 / Python 3.12)
+
+on:
+  workflow_dispatch:      # lanzar manualmente desde Actions UI
+  push:
+    branches:
+      - main
+
+jobs:
+  build-layer:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python (for wheel building helper)
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.12"
+
+      # 1) Build wheels in manylinux_2_28 container (produces manylinux-compatible wheels)
+      - name: Create wheels (manylinux_2_28)
+        run: |
+          mkdir -p wheelhouse
+          # Run the manylinux container to build wheels for cp312
+          docker run --rm -v "${{ github.workspace }}/wheelhouse":/wheels -v "${{ github.workspace }}/requirements.txt":/requirements.txt \
+            quay.io/pypa/manylinux_2_28_x86_64:latest /bin/bash -lc "\
+              /opt/python/cp312-cp312/bin/pip wheel --no-deps --wheel-dir=/wheels -r /requirements.txt && \
+              chown -R $(id -u):$(id -g) /wheels"
+        # nota: este paso usa docker dentro del runner (Actions runner tiene Docker disponible)
+
+      # 2) Use amazonlinux container to install wheels into /out and run playwright install
+      - name: Build layer in Amazon Linux 2023
+        run: |
+          # crear carpeta de salida
+          rm -rf out || true
+          mkdir -p out/python/lib/python3.12/site-packages
+          # ejecutar amazonlinux container que copiará wheelhouse y requirements
+          docker run --rm -v "${{ github.workspace }}/wheelhouse":/wheels -v "${{ github.workspace }}/out":/out -v "${{ github.workspace }}/requirements.txt":/requirements.txt \
+            public.ecr.aws/amazonlinux/amazonlinux:2023 /bin/bash -lc "\
+              set -e; \
+              dnf -y install python3 python3-pip python3-devel tar xz unzip fontconfig freetype glibc-langpack-en libX11 gcc gcc-c++ make libXcomposite libXcursor libXdamage libXrandr libXss libXtst dbus-glib gtk3 alsa-lib pango || true; \
+              python3 -m pip install --upgrade pip setuptools wheel; \
+              python3 -m pip install --no-index --find-links=/wheels --no-deps --target=/out/python/lib/python3.12/site-packages -r /requirements.txt; \
+              export PLAYWRIGHT_BROWSERS_PATH=/out/.cache/ms-playwright; \
+              # Asegurarse de que utilizamos la instalación que acabamos de colocar:
+              PYTHONPATH=/out/python/lib/python3.12/site-packages PLAYWRIGHT_BROWSERS_PATH=/out/.cache/ms-playwright \
+                python3 -m playwright install --with-deps chromium; \
+              chown -R 1000:1000 /out || true"
+        # este paso ejecuta amazonlinux:2023 dentro de Docker en runner para instalar las deps del SO y bajar Chromium
+
+      - name: List out contents
+        run: |
+          echo "size of out:"
+          du -sh out || true
+          ls -la out
+          ls -la out/python/lib/python3.12/site-packages | head -n 40 || true
+
+      - name: Zip layer
+        run: |
+          cd out
+          zip -r ../playwright_layer_py312.zip .
+          cd ..
+          ls -lh playwright_layer_py312.zip
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-layer-py312
+          path: playwright_layer_py312.zip
