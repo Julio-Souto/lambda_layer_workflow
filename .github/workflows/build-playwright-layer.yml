@@ -48,14 +48,15 @@ jobs:
               python3 -m pip install --upgrade pip setuptools wheel || true; \
               # instalar todas las dependencias de tu requirements
               python3 -m pip install --no-index --find-links=/wheels --no-deps --target=/out/python/lib/python3.12/site-packages -r /requirements.txt || true; \
-              # instalar Playwright siempre
-              python3 -m pip install --no-deps --upgrade playwright --target=/out/python/lib/python3.12/site-packages || true; \
+              # instalar Playwright CORRECTAMENTE en el sistema
+              python3 -m pip install --upgrade playwright || true; \
               chmod -R a+rwX /out || true; \
               # instalar Chromium con dependencias dentro de la layer
               export PLAYWRIGHT_BROWSERS_PATH=/out/.cache/ms-playwright; \
-              export PYTHONPATH=/out/python/lib/python3.12/site-packages; \
-              PYTHONPATH=$PYTHONPATH PLAYWRIGHT_BROWSERS_PATH=$PLAYWRIGHT_BROWSERS_PATH \
-                python3 -m playwright install --with-deps chromium 2>&1 | tee /out/playwright-install.log; \
+              # usar playwright del sistema para la instalación
+              python3 -m playwright install --with-deps chromium 2>&1 | tee /out/playwright-install.log; \
+              # ahora copiar playwright al directorio de salida
+              python3 -m pip install --upgrade playwright --target=/out/python/lib/python3.12/site-packages || true; \
               chmod -R a+rX /out || true; \
               # forzar permisos ejecutables
               if find /out -type f -name headless_shell | grep -q headless_shell; then \
