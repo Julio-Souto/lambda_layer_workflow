@@ -32,61 +32,58 @@ jobs:
           mkdir -p out/lib64
           chmod -R a+rwX out || true
 
-      - name: Build layer in Lambda Python 3.12 image (system libs + python packages + browsers)
+      - name: Build layer in Amazon Linux 2023 (system libs + python packages + browsers)
         run: |
-          set -e
-          # run the official lambda python image but override entrypoint to run our shell script
+          set -euo pipefail
+          echo "Starting amazonlinux container to build the layer..."
           docker run --rm --entrypoint /bin/bash \
             -v "${{ github.workspace }}/wheelhouse":/wheels \
             -v "${{ github.workspace }}/out":/out \
             -v "${{ github.workspace }}/requirements.txt":/requirements.txt \
-            public.ecr.aws/lambda/python:3.12 -lc "\
+            public.ecr.aws/amazonlinux/amazonlinux:2023 -lc "\
               set -euo pipefail; \
-              echo '=== inside container: ensure pip exists ==='; \
-              # try ensurepip; fallback to get-pip.py if needed
+              echo '=== update & install base packages ==='; \
+              yum -y update || true; \
+              yum -y install -y which findutils python3 python3-devel python3-pip tar xz unzip curl fontconfig freetype freetype-devel glibc-langpack-en || true; \
+              echo '=== install common libs for chromium (tolerate missing) ==='; \
+              yum -y install -y nspr nss nss-util dbus-glib atk at-spi2-atk expat cairo libX11 libXcomposite libXcursor libXdamage libXrandr libXtst libXrender libXfixes libXext libXScrnSaver libxcb libxshmfence libxkbcommon mesa-libgbm libdrm alsa-lib gtk3 pango || true; \
+              echo 'python3 location:'; which python3 || true; python3 --version || true; \
+              echo '=== ensure pip exists ==='; \
               python3 -m ensurepip --upgrade || true; \
               if ! python3 -m pip --version >/dev/null 2>&1; then \
-                echo 'pip not found via ensurepip; downloading get-pip.py'; \
+                echo 'pip not present, fetching get-pip.py'; \
                 curl -sS https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip.py || true; \
                 python3 /tmp/get-pip.py || true; \
               fi; \
-              echo 'pip version:'; python3 -m pip --version || true; \
-              echo '=== install OS packages (tolerate missing names) ==='; \
-              # Try a set of common packages; don't fail if some names are missing
-              yum -y update || true; \
-              yum -y install -y python3-devel tar xz unzip fontconfig freetype freetype-devel glibc-langpack-en || true; \
-              # common libs for chromium; tolerate failures (some package names may not exist)
-              yum -y install -y nspr nss nss-util dbus-glib atk at-spi2-atk expat cairo libX11 libXcomposite libXcursor libXdamage libXrandr libXtst libXrender libXfixes libXext libXrandr libXScrnSaver libxcb libxshmfence libxkbcommon mesa-libgbm libdrm alsa-lib gtk3 pango which || true; \
-              echo '=== install python wheels into /out (from wheelhouse) ==='; \
               python3 -m pip install --upgrade pip setuptools wheel || true; \
+              echo '=== install python wheels into /out from wheelhouse ==='; \
               python3 -m pip install --no-index --find-links=/wheels --no-deps --target=/out/python/lib/python3.12/site-packages -r /requirements.txt || true; \
-              echo '=== ensure Playwright installed into /out ==='; \
+              echo '=== install playwright into /out (ensures module available) ==='; \
               python3 -m pip install --no-deps --upgrade playwright --target=/out/python/lib/python3.12/site-packages || true; \
               chmod -R a+rwX /out || true; \
-              echo 'PYTHONPATH set to /out...'; \
+              echo '=== set PYTHONPATH to include /out site-packages and install browsers to /tmp ==='; \
               export PYTHONPATH=/out/python/lib/python3.12/site-packages; \
               export PLAYWRIGHT_BROWSERS_PATH=/tmp/ms-playwright; \
-              echo '=== run playwright install to /tmp/ms-playwright (log to /tmp/playwright-install.log) ==='; \
-              # run playwright install using the PYTHONPATH so python finds the package in /out
+              echo 'PYTHONPATH='${PYTHONPATH}; echo 'PLAYWRIGHT_BROWSERS_PATH='${PLAYWRIGHT_BROWSERS_PATH}; \
+              echo '=== run playwright install (this may take a while) ==='; \
               PYTHONPATH=$PYTHONPATH PLAYWRIGHT_BROWSERS_PATH=$PLAYWRIGHT_BROWSERS_PATH python3 -m playwright install --with-deps chromium 2>&1 | tee /tmp/playwright-install.log || true; \
-              echo '=== copy browsers from /tmp to /out ==='; \
-              mkdir -p /out/.cache/ms-playwright || true; \
+              echo '=== copy browsers to /out/.cache/ms-playwright ==='; \
+              mkdir -p /out/.cache/ms-playwright; \
               cp -a /tmp/ms-playwright/* /out/.cache/ms-playwright/ 2>/dev/null || true; \
-              echo '=== collect native libs into /out/lib64 (copy if present) ==='; \
+              echo '=== collect native libs into /out/lib64 if present ==='; \
               mkdir -p /out/lib64 || true; \
               for lib in libnspr4.so libnss3.so libnssutil3.so libdbus-1.so libatk-1.0.so libatk-bridge-2.0.so libexpat.so.1 libatspi.so.0 libX11.so.6 libXcomposite.so.1 libXdamage.so.1 libXext.so.6 libXfixes.so.3 libXrandr.so.2 libgbm.so.1 libxcb.so.1 libxkbcommon.so.0 libudev.so.1 libasound.so.2; do \
-                # try to copy from common locations
                 for p in /usr/lib64/$lib /usr/lib/$lib /lib64/$lib /lib/$lib; do \
                   if [ -f \"$p\" ]; then cp -v \"$p\" /out/lib64/ || true; fi; \
                 done; \
               done; \
-              echo '=== set permissions and save playright install log to /out ==='; \
+              echo '=== permissions & finalizing ==='; \
               chmod -R a+rwX /out || true; \
               if [ -f /tmp/playwright-install.log ]; then cp /tmp/playwright-install.log /out/playwright-install.log || true; fi; \
               find /out -type f -name headless_shell -exec chmod +x {} \\; || true; \
               find /out -type f -name chrome -exec chmod +x {} \\; || true; \
               chown -R 1000:1000 /out || true; \
-              echo '=== done inside container ==='"
+              echo '=== amazonlinux container step complete ==='"
 
       - name: Post-process out move browsers if installed inside site-packages
         run: |
