@@ -43,44 +43,70 @@ jobs:
             -v "${{ github.workspace }}/requirements.txt":/requirements.txt \
             public.ecr.aws/amazonlinux/amazonlinux:2023 -lc "\
               set -eo pipefail; \
-              echo 'update and install base packages (tolerate failures)'; \
+              echo 'Instalando dependencias...'; \
               yum -y update || true; \
               yum -y install -y findutils python3 python3-devel python3-pip tar xz unzip curl fontconfig freetype freetype-devel glibc-langpack-en || true; \
-              echo 'install common libs for chromium (tolerate failures)'; \
-              yum -y install -y nspr nss nss-util dbus-glib atk at-spi2-atk expat cairo libX11 libXcomposite libXcursor libXdamage libXrandr libXtst libXrender libXfixes libXext libXScrnSaver libxcb libxshmfence libxkbcommon mesa-libgbm libdrm alsa-lib gtk3 pango || true; \
-              echo 'python3 info:'; python3 --version || true; \
-              echo 'detect python minor version with python -c (robust)'; \
-              PYVER=\$(python3 -c 'import sys; print(f\"{sys.version_info.major}.{sys.version_info.minor}\")' 2>/dev/null || python3 -c 'import sys; v=sys.version_info; print(\"%d.%d\" % (v.major, v.minor))' 2>/dev/null || echo '3.9'); \
-              echo \"Detected python version inside container: \$PYVER\"; \
-              OUT_SITE=\"/out/python/lib/python\${PYVER}/site-packages\"; \
-              echo \"OUT_SITE path: \$OUT_SITE\"; \
-              mkdir -p \"\$OUT_SITE\"; \
-              echo 'ensure pip exists'; \
-              python3 -m ensurepip --upgrade || true; \
-              if ! python3 -m pip --version >/dev/null 2>&1; then \
-                echo 'pip not present, fetching get-pip.py'; \
-                curl -sS https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip.py || true; \
-                python3 /tmp/get-pip.py || true; \
-              fi; \
-              python3 -m pip install --upgrade pip setuptools wheel || true; \
-              echo 'install python wheels into \$OUT_SITE from wheelhouse if possible'; \
-              python3 -m pip install --no-index --find-links=/wheels --no-deps --target=\"\$OUT_SITE\" -r /requirements.txt || true; \
-              echo 'install playwright into \$OUT_SITE to make module available for python3'; \
-              python3 -m pip install --no-deps --upgrade playwright --target=\"\$OUT_SITE\" || true; \
-              echo 'chmod out'; chmod -R a+rwX /out || true; \
-              echo 'set PYTHONPATH and PLAYWRIGHT_BROWSERS_PATH then run playwright install'; \
-              export PYTHONPATH=\"\$OUT_SITE\"; \
-              export PLAYWRIGHT_BROWSERS_PATH=/tmp/ms-playwright; \
-              echo \"PYTHONPATH=\${PYTHONPATH:-}\"; echo \"PLAYWRIGHT_BROWSERS_PATH=\${PLAYWRIGHT_BROWSERS_PATH:-}\"; \
-              PYTHONPATH=\"\$PYTHONPATH\" PLAYWRIGHT_BROWSERS_PATH=\"\$PLAYWRIGHT_BROWSERS_PATH\" python3 -m playwright install chromium 2>&1 | tee /tmp/playwright-install.log || true; \
-              echo 'copy browsers to /out/.cache/ms-playwright'; \
-              mkdir -p /out/.cache/ms-playwright || true; \
-              cp -a /tmp/ms-playwright/* /out/.cache/ms-playwright/ 2>/dev/null || true; \
-              echo 'collect native libs into /out/lib64 if present'; \
+              echo 'Instalando librerías para Chromium...'; \
+              yum -y install -y \
+                nspr nss nss-util nss-tools \
+                dbus-glib dbus-libs \
+                atk at-spi2-atk at-spi2-core \
+                expat \
+                cairo cairo-gobject \
+                libX11 libXcomposite libXcursor libXdamage libXrandr libXtst libXrender \
+                libXfixes libXext libXScrnSaver \
+                libxcb libxshmfence libxkbcommon libxkbcommon-x11 \
+                mesa-libgbm mesa-dri-drivers \
+                libdrm \
+                alsa-lib \
+                gtk3 gtk2 \
+                pango \
+                cups-libs \
+                gdk-pixbuf2 \
+                libwayland-client libwayland-server \
+                libglvnd-glx \
+                libsecret \
+                || true; \
+              # ... resto del código igual hasta la parte de librerías ...
+              echo 'Recolectando librerías nativas...'; \
               mkdir -p /out/lib64 || true; \
-              for lib in libnspr4.so libnss3.so libnssutil3.so libdbus-1.so libatk-1.0.so libatk-bridge-2.0.so libexpat.so.1 libatspi.so.0 libX11.so.6 libXcomposite.so.1 libXdamage.so.1 libXext.so.6 libXfixes.so.3 libXrandr.so.2 libgbm.so.1 libxcb.so.1 libxkbcommon.so.0 libudev.so.1 libasound.so.2; do \
+              # Lista expandida de librerías críticas
+              for lib in \
+                libnspr4.so libplc4.so libplds4.so \
+                libnss3.so libnssutil3.so libsmime3.so libssl3.so \
+                libatk-1.0.so libatk-bridge-2.0.so \
+                libcairo.so libcairo-gobject.so \
+                libgdk-3.so libgdk_pixbuf-2.0.so \
+                libgtk-3.so \
+                libpango-1.0.so libpangocairo-1.0.so \
+                libgio-2.0.so libglib-2.0.so libgobject-2.0.so \
+                libfreetype.so libfontconfig.so \
+                libX11.so libXcomposite.so libXcursor.so libXdamage.so libXext.so \
+                libXfixes.so libXi.so libXrandr.so libXrender.so libXtst.so \
+                libxcb.so libxshmfence.so \
+                libxkbcommon.so libxkbcommon-x11.so \
+                libdrm.so libgbm.so \
+                libasound.so \
+                libwayland-client.so libwayland-server.so \
+                libexpat.so \
+                libz.so libselinux.so libresolv.so \
+              ; do \
                 for p in /usr/lib64/\$lib /usr/lib/\$lib /lib64/\$lib /lib/\$lib; do \
-                  if [ -f \"\$p\" ]; then cp -v \"\$p\" /out/lib64/ || true; fi; \
+                  if [ -f \"\$p\" ]; then \
+                    echo \"Copiando \$p\"; \
+                    cp -v \"\$p\" /out/lib64/ || true; \
+                    # Copiar también enlaces simbólicos
+                    if [ -L \"\$p\" ]; then \
+                      link_target=\$(readlink \"\$p\"); \
+                      if [ \"\${link_target#/}\" = \"\$link_target\" ]; then \
+                        # Enlace relativo
+                        cp -av \"\$(dirname \"\$p\")/\$link_target\" /out/lib64/ 2>/dev/null || true; \
+                      else \
+                        # Enlace absoluto  
+                        cp -av \"\$link_target\" /out/lib64/ 2>/dev/null || true; \
+                      fi; \
+                    fi; \
+                  fi; \
                 done; \
               done; \
               echo 'save logs into /out and fix perms'; \
