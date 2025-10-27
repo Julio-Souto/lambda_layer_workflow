@@ -43,14 +43,14 @@ jobs:
             -v "${{ github.workspace }}/requirements.txt":/requirements.txt \
             public.ecr.aws/amazonlinux/amazonlinux:2023 -lc "\
               set -eo pipefail; \
-              echo 'update and install base packages'; \
+              echo 'update and install base packages (tolerate failures)'; \
               yum -y update || true; \
-              yum -y install -y which findutils python3 python3-devel python3-pip tar xz unzip curl fontconfig freetype freetype-devel glibc-langpack-en || true; \
+              yum -y install -y findutils python3 python3-devel python3-pip tar xz unzip curl fontconfig freetype freetype-devel glibc-langpack-en || true; \
               echo 'install common libs for chromium (tolerate failures)'; \
               yum -y install -y nspr nss nss-util dbus-glib atk at-spi2-atk expat cairo libX11 libXcomposite libXcursor libXdamage libXrandr libXtst libXrender libXfixes libXext libXScrnSaver libxcb libxshmfence libxkbcommon mesa-libgbm libdrm alsa-lib gtk3 pango || true; \
-              echo 'python3 info:'; which python3 || true; python3 --version || true; \
-              echo 'detect python minor version using python3 -V and awk'; \
-              PYVER=$(python3 -V 2>&1 | awk '{v=$2; split(v,a,\".\"); print a[1]\".\"a[2]}'); \
+              echo 'python3 info:'; python3 --version || true; \
+              echo 'detect python minor version with python -c (robust)'; \
+              PYVER=$(python3 -c 'import sys; v=sys.version_info; print(\"%d.%d\" % (v.major, v.minor))' 2>/dev/null) || PYVER=3.9; \
               echo \"Detected python version inside container: $PYVER\"; \
               OUT_SITE=/out/python/lib/python${PYVER}/site-packages; \
               mkdir -p \"$OUT_SITE\"; \
@@ -85,7 +85,7 @@ jobs:
               echo 'save logs into /out and fix perms'; \
               chmod -R a+rwX /out || true; \
               if [ -f /tmp/playwright-install.log ]; then cp /tmp/playwright-install.log /out/playwright-install.log || true; fi; \
-              FIND_PATH=$(which find || echo /usr/bin/find); \
+              FIND_PATH=$(which find 2>/dev/null || echo /usr/bin/find); \
               echo \"Using find at: $FIND_PATH\"; \
               $FIND_PATH /out -type f -name headless_shell -exec chmod +x {} \\; || true; \
               $FIND_PATH /out -type f -name chrome -exec chmod +x {} \\; || true; \
