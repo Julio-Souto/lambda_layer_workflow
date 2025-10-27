@@ -12,7 +12,7 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Setup Python (host, for helper steps)
+      - name: Setup Python (host helper)
         uses: actions/setup-python@v4
         with:
           python-version: "3.12"
@@ -32,69 +32,61 @@ jobs:
           mkdir -p out/lib64
           chmod -R a+rwX out || true
 
-      - name: Build layer in Amazon Linux 2023 image (system libs + python packages + browsers)
+      - name: Build layer in Lambda Python 3.12 image (system libs + python packages + browsers)
         run: |
           set -e
-          # Ejecutar amazonlinux:2023 para instalar deps nativas, pip instal, y playwright install
-          docker run --rm \
-            --entrypoint /bin/bash \
+          # run the official lambda python image but override entrypoint to run our shell script
+          docker run --rm --entrypoint /bin/bash \
             -v "${{ github.workspace }}/wheelhouse":/wheels \
             -v "${{ github.workspace }}/out":/out \
             -v "${{ github.workspace }}/requirements.txt":/requirements.txt \
-            public.ecr.aws/amazonlinux/amazonlinux:2023 -lc "\
-              set -e; \
-              echo '=== Updating system and installing OS packages required by Chromium ==='; \
+            public.ecr.aws/lambda/python:3.12 -lc "\
+              set -euo pipefail; \
+              echo '=== inside container: ensure pip exists ==='; \
+              # try ensurepip; fallback to get-pip.py if needed
+              python3 -m ensurepip --upgrade || true; \
+              if ! python3 -m pip --version >/dev/null 2>&1; then \
+                echo 'pip not found via ensurepip; downloading get-pip.py'; \
+                curl -sS https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip.py || true; \
+                python3 /tmp/get-pip.py || true; \
+              fi; \
+              echo 'pip version:'; python3 -m pip --version || true; \
+              echo '=== install OS packages (tolerate missing names) ==='; \
+              # Try a set of common packages; don't fail if some names are missing
               yum -y update || true; \
-              yum -y install -y \
-                python3 python3-pip python3-devel tar xz unzip fontconfig freetype freetype-devel glibc-langpack-en \
-                nspr nss nss-util dbus-glib atk at-spi2-atk expat libX11 libXcomposite libXcursor libXdamage libXrandr libXtst \
-                libXrender libXfixes libXext libXrandr libXScrnSaver libxcb libxshmfence libxkbcommon \
-                mesa-libgbm libdrm alsa-lib gtk3 pango cairo libudev freetype fontconfig which || true; \
-              echo '=== Upgrade pip tools inside container ==='; \
+              yum -y install -y python3-devel tar xz unzip fontconfig freetype freetype-devel glibc-langpack-en || true; \
+              # common libs for chromium; tolerate failures (some package names may not exist)
+              yum -y install -y nspr nss nss-util dbus-glib atk at-spi2-atk expat cairo libX11 libXcomposite libXcursor libXdamage libXrandr libXtst libXrender libXfixes libXext libXrandr libXScrnSaver libxcb libxshmfence libxkbcommon mesa-libgbm libdrm alsa-lib gtk3 pango which || true; \
+              echo '=== install python wheels into /out (from wheelhouse) ==='; \
               python3 -m pip install --upgrade pip setuptools wheel || true; \
-              echo '=== Install python wheels into /out (no-index, from wheelhouse) ==='; \
               python3 -m pip install --no-index --find-links=/wheels --no-deps --target=/out/python/lib/python3.12/site-packages -r /requirements.txt || true; \
-              echo '=== Ensure Playwright package present in /out ==='; \
+              echo '=== ensure Playwright installed into /out ==='; \
               python3 -m pip install --no-deps --upgrade playwright --target=/out/python/lib/python3.12/site-packages || true; \
               chmod -R a+rwX /out || true; \
-              echo '=== Install Chromium browsers into /tmp (then copy to /out) ==='; \
-              export PLAYWRIGHT_BROWSERS_PATH=/tmp/ms-playwright; \
+              echo 'PYTHONPATH set to /out...'; \
               export PYTHONPATH=/out/python/lib/python3.12/site-packages; \
-              PYTHONPATH=$PYTHONPATH PLAYWRIGHT_BROWSERS_PATH=$PLAYWRIGHT_BROWSERS_PATH \
-                python3 -m playwright install --with-deps chromium 2>&1 | tee /tmp/playwright-install.log || true; \
+              export PLAYWRIGHT_BROWSERS_PATH=/tmp/ms-playwright; \
+              echo '=== run playwright install to /tmp/ms-playwright (log to /tmp/playwright-install.log) ==='; \
+              # run playwright install using the PYTHONPATH so python finds the package in /out
+              PYTHONPATH=$PYTHONPATH PLAYWRIGHT_BROWSERS_PATH=$PLAYWRIGHT_BROWSERS_PATH python3 -m playwright install --with-deps chromium 2>&1 | tee /tmp/playwright-install.log || true; \
               echo '=== copy browsers from /tmp to /out ==='; \
-              mkdir -p /out/.cache/ms-playwright; \
+              mkdir -p /out/.cache/ms-playwright || true; \
               cp -a /tmp/ms-playwright/* /out/.cache/ms-playwright/ 2>/dev/null || true; \
-              echo '=== Collect native libs for layer into /out/lib64 ==='; \
-              mkdir -p /out/lib64; \
-              # copiar librerías necesarias (selección basada en los errores típicos) \
-              cp -v /usr/lib64/libnspr4.so* /out/lib64/ 2>/dev/null || true; \
-              cp -v /usr/lib64/libnss3.so* /out/lib64/ 2>/dev/null || true; \
-              cp -v /usr/lib64/libnssutil3.so* /out/lib64/ 2>/dev/null || true; \
-              cp -v /usr/lib64/libdbus-1.so* /out/lib64/ 2>/dev/null || true; \
-              cp -v /usr/lib64/libatk-1.0.so* /out/lib64/ 2>/dev/null || true; \
-              cp -v /usr/lib64/libatk-bridge-2.0.so* /out/lib64/ 2>/dev/null || true; \
-              cp -v /usr/lib64/libexpat.so* /out/lib64/ 2>/dev/null || true; \
-              cp -v /usr/lib64/libatspi.so* /out/lib64/ 2>/dev/null || true; \
-              cp -v /usr/lib64/libX11.so* /out/lib64/ 2>/dev/null || true; \
-              cp -v /usr/lib64/libXcomposite.so* /out/lib64/ 2>/dev/null || true; \
-              cp -v /usr/lib64/libXdamage.so* /out/lib64/ 2>/dev/null || true; \
-              cp -v /usr/lib64/libXext.so* /out/lib64/ 2>/dev/null || true; \
-              cp -v /usr/lib64/libXfixes.so* /out/lib64/ 2>/dev/null || true; \
-              cp -v /usr/lib64/libXrandr.so* /out/lib64/ 2>/dev/null || true; \
-              cp -v /usr/lib64/libgbm.so* /out/lib64/ 2>/dev/null || true; \
-              cp -v /usr/lib64/libxcb.so* /out/lib64/ 2>/dev/null || true; \
-              cp -v /usr/lib64/libxkbcommon.so* /out/lib64/ 2>/dev/null || true; \
-              cp -v /usr/lib64/libudev.so* /out/lib64/ 2>/dev/null || true; \
-              cp -v /usr/lib64/libasound.so* /out/lib64/ 2>/dev/null || true; \
-              echo '=== Fix perms and set executables ==='; \
+              echo '=== collect native libs into /out/lib64 (copy if present) ==='; \
+              mkdir -p /out/lib64 || true; \
+              for lib in libnspr4.so libnss3.so libnssutil3.so libdbus-1.so libatk-1.0.so libatk-bridge-2.0.so libexpat.so.1 libatspi.so.0 libX11.so.6 libXcomposite.so.1 libXdamage.so.1 libXext.so.6 libXfixes.so.3 libXrandr.so.2 libgbm.so.1 libxcb.so.1 libxkbcommon.so.0 libudev.so.1 libasound.so.2; do \
+                # try to copy from common locations
+                for p in /usr/lib64/$lib /usr/lib/$lib /lib64/$lib /lib/$lib; do \
+                  if [ -f \"$p\" ]; then cp -v \"$p\" /out/lib64/ || true; fi; \
+                done; \
+              done; \
+              echo '=== set permissions and save playright install log to /out ==='; \
               chmod -R a+rwX /out || true; \
+              if [ -f /tmp/playwright-install.log ]; then cp /tmp/playwright-install.log /out/playwright-install.log || true; fi; \
               find /out -type f -name headless_shell -exec chmod +x {} \\; || true; \
               find /out -type f -name chrome -exec chmod +x {} \\; || true; \
-              echo '=== Save container logs (playwright install) to /out ==='; \
-              if [ -f /tmp/playwright-install.log ]; then cp /tmp/playwright-install.log /out/playwright-install.log || true; fi; \
               chown -R 1000:1000 /out || true; \
-              echo '=== done inside amazonlinux container ==='"
+              echo '=== done inside container ==='"
 
       - name: Post-process out move browsers if installed inside site-packages
         run: |
