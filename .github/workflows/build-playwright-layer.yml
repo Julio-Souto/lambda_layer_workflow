@@ -42,7 +42,7 @@ jobs:
           cat > /tmp/build_script.sh << 'EOF'
           set -e
           
-          # Actualizar e instalar paquetes esenciales
+          # Actualizar e instalar paquetes esenciales (nombres corregidos para AL2023)
           dnf update -y
           dnf install -y \
             python3 python3-pip python3-devel \
@@ -52,8 +52,10 @@ jobs:
             libXrandr libXtst libXrender libxcb \
             libxshmfence libxkbcommon atk gtk3 \
             pango alsa-lib cups-libs dbus-glib \
-            libnss3 nspr at-spi2-atk libdrm \
-            mesa-libgbm findutils
+            nss nss-util nspr \
+            at-spi2-core at-spi2-atk libdrm \
+            mesa-libgbm findutils \
+            liberation-fonts dejavu-sans-fonts
           
           # Configurar Python
           PYVER=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
@@ -94,7 +96,7 @@ jobs:
             echo "Warning: Library $lib not found"
           }
           
-          # Librerías esenciales para Chromium
+          # Librerías esenciales para Chromium (nombres actualizados)
           copy_library "libnspr4.so"
           copy_library "libnss3.so" 
           copy_library "libnssutil3.so"
@@ -104,6 +106,12 @@ jobs:
           copy_library "libgbm.so"
           copy_library "libX11.so.6"
           copy_library "libxcb.so.1"
+          copy_library "libXcomposite.so.1"
+          copy_library "libXdamage.so.1"
+          copy_library "libXext.so.6"
+          copy_library "libXfixes.so.3"
+          copy_library "libXrandr.so.2"
+          copy_library "libasound.so.2"
           
           # Hacer ejecutables los binarios de chromium
           find /out/ms-playwright -type f \( -name "chrome" -o -name "headless_shell" \) -exec chmod +x {} \;
@@ -134,10 +142,10 @@ jobs:
           find out -type d | sort
           
           echo "=== Binarios de Chromium ==="
-          find out -name "chrome" -o -name "headless_shell" | xargs -I {} ls -la {} || echo "No binaries found"
+          find out -name "chrome" -o -name "headless_shell" | xargs -I {} ls -la {} 2>/dev/null || echo "No binaries found"
           
           echo "=== Librerías ==="
-          ls -la out/lib64/ | head -20 || echo "No lib64 directory"
+          ls -la out/lib64/ 2>/dev/null | head -20 || echo "No lib64 directory"
           
           echo "=== Playwright ==="
           find out/python -name "playwright" -type d | head -5
@@ -154,7 +162,7 @@ jobs:
           find out -name "*.sh" -exec chmod 755 {} \;
           
           # Permisos para librerías
-          find out/lib64 -name "*.so*" -exec chmod 755 {} \;
+          find out/lib64 -name "*.so*" -exec chmod 755 {} \; 2>/dev/null || true
 
       - name: Show final structure
         run: |
