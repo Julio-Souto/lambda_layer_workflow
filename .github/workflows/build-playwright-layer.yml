@@ -1,9 +1,10 @@
-name: Build Playwright Chromium Layer
+name: Build Playwright Layer (AL2023 Python 3.12)
 
 on:
   workflow_dispatch:
   push:
-    branches: [ main ]
+    branches:
+      - main
 
 jobs:
   build-layer:
@@ -12,70 +13,174 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Build complete layer
+      - name: Setup Python host helper
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.12"
+
+      - name: Create wheelhouse manylinux
+        run: |
+          mkdir -p wheelhouse
+          docker run --rm -v "${{ github.workspace }}/wheelhouse":/wheels -v "${{ github.workspace }}/requirements.txt":/requirements.txt \
+            quay.io/pypa/manylinux_2_28_x86_64:latest /bin/bash -lc "\
+              /opt/python/cp312-cp312/bin/pip wheel --no-deps --wheel-dir=/wheels -r /requirements.txt; \
+              chown -R $(id -u):$(id -g) /wheels"
+
+      - name: Prepare out directory
+        run: |
+          rm -rf out
+          mkdir -p out/python
+          mkdir -p out/lib64
+          chmod -R 755 out
+
+      - name: Build layer in amazonlinux container
         run: |
           set -eo pipefail
-          mkdir -p out
+          echo "Starting amazonlinux container to build the layer"
           
-          # Crear estructura de directorios
-          mkdir -p out/python
-          mkdir -p out/bin
+          # Crear script dentro del contenedor para mejor control
+          cat > /tmp/build_script.sh << 'EOF'
+          set -e
           
-          echo "Instalando Playwright y Chromium en contenedor Amazon Linux..."
+          # Actualizar e instalar paquetes esenciales
+          dnf update -y
+          dnf install -y \
+            python3 python3-pip python3-devel \
+            tar xz unzip curl \
+            fontconfig freetype freetype-devel \
+            libX11 libXcomposite libXcursor libXdamage \
+            libXrandr libXtst libXrender libxcb \
+            libxshmfence libxkbcommon atk gtk3 \
+            pango alsa-lib cups-libs dbus-glib \
+            libnss3 nspr at-spi2-atk libdrm \
+            mesa-libgbm findutils
+          
+          # Configurar Python
+          PYVER=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
+          echo "Python version: $PYVER"
+          
+          OUT_SITE="/out/python/lib/python$PYVER/site-packages"
+          mkdir -p "$OUT_SITE"
+          
+          # Instalar pip si no existe
+          if ! python3 -m pip --version &>/dev/null; then
+            curl -sS https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip.py
+            python3 /tmp/get-pip.py
+          fi
+          
+          python3 -m pip install --upgrade pip setuptools wheel
+          
+          # Instalar dependencias Python
+          python3 -m pip install --no-index --find-links=/wheels --no-deps --target="$OUT_SITE" -r /requirements.txt
+          
+          # Instalar playwright
+          python3 -m pip install playwright --target="$OUT_SITE"
+          
+          # Configurar e instalar chromium
+          export PLAYWRIGHT_BROWSERS_PATH=/out/ms-playwright
+          python3 -m playwright install chromium
+          
+          # Recolectar librerías nativas críticas
+          mkdir -p /out/lib64
+          copy_library() {
+            local lib=$1
+            for path in /usr/lib64/$lib /usr/lib/$lib /lib64/$lib /lib/$lib; do
+              if [ -f "$path" ]; then
+                cp "$path" /out/lib64/
+                echo "Copied: $path"
+                return 0
+              fi
+            done
+            echo "Warning: Library $lib not found"
+          }
+          
+          # Librerías esenciales para Chromium
+          copy_library "libnspr4.so"
+          copy_library "libnss3.so" 
+          copy_library "libnssutil3.so"
+          copy_library "libatk-1.0.so"
+          copy_library "libatk-bridge-2.0.so"
+          copy_library "libcairo.so"
+          copy_library "libgbm.so"
+          copy_library "libX11.so.6"
+          copy_library "libxcb.so.1"
+          
+          # Hacer ejecutables los binarios de chromium
+          find /out/ms-playwright -type f \( -name "chrome" -o -name "headless_shell" \) -exec chmod +x {} \;
+          
+          # Crear archivo de configuración
+          cat > /out/setup_env.sh << 'ENVEOF'
+          export PLAYWRIGHT_BROWSERS_PATH="/opt/ms-playwright"
+          export LD_LIBRARY_PATH="/opt/lib64:$LD_LIBRARY_PATH"
+          ENVEOF
+          
+          chmod +x /out/setup_env.sh
+          echo "Build completed successfully"
+          EOF
+          
+          # Ejecutar el script en el contenedor
           docker run --rm \
-            -v "$(pwd)/out:/out" \
+            -v "${{ github.workspace }}/wheelhouse":/wheels \
+            -v "${{ github.workspace }}/out":/out \
+            -v "${{ github.workspace }}/requirements.txt":/requirements.txt \
+            -v /tmp/build_script.sh:/tmp/build_script.sh \
             public.ecr.aws/amazonlinux/amazonlinux:2023 \
-            bash -c "
-            # Instalar dependencias del sistema
-            dnf update -y
-            dnf install -y \
-              python3.11 python3.11-pip \
-              tar xz unzip curl \
-              fontconfig freetype freetype-devel \
-              libX11 libXcomposite libXcursor libXdamage \
-              libXrandr libXtst libXrender libxcb \
-              libxshmfence libxkbcommon atk gtk3 \
-              pango alsa-lib cups-libs dbus-glib \
-              libnss3 nspr at-spi2-atk libdrm \
-              mesa-libgbm
-            
-            # Instalar Playwright
-            pip3.11 install playwright==1.55.0 --target /out/python
-            
-            # Instalar Chromium con Playwright
-            export PLAYWRIGHT_BROWSERS_PATH=/out/ms-playwright
-            python3.11 -m playwright install chromium --with-deps
-            
-            # Crear script wrapper para chromium
-            cat > /out/bin/chromium << 'EOF'
-            #!/bin/bash
-            export PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
-            exec /opt/ms-playwright/chromium-*/chrome-linux/chrome \"\$@\"
-            EOF
-            chmod +x /out/bin/chromium
-            
-            # Verificar instalación
-            echo '=== Chromium instalado en ==='
-            find /out/ms-playwright -name 'chrome' -type f
-            "
+            bash /tmp/build_script.sh
 
       - name: Verify installation
         run: |
-          echo "=== Estructura de out ==="
-          find out -type f -name "chrome" | head -5
-          echo "=== Playwright Python ==="
-          ls -la out/python/playwright* | head -10
+          echo "=== Verificando instalación ==="
+          echo "Estructura de directorios:"
+          find out -type d | sort
+          
+          echo "=== Binarios de Chromium ==="
+          find out -name "chrome" -o -name "headless_shell" | xargs -I {} ls -la {} || echo "No binaries found"
+          
+          echo "=== Librerías ==="
+          ls -la out/lib64/ | head -20 || echo "No lib64 directory"
+          
+          echo "=== Playwright ==="
+          find out/python -name "playwright" -type d | head -5
 
-      - name: Create layer zip
+      - name: Fix permissions
+        run: |
+          # Permisos simples y consistentes
+          find out -type d -exec chmod 755 {} \;
+          find out -type f -exec chmod 644 {} \;
+          
+          # Hacer ejecutables los binarios
+          find out -name "chrome" -exec chmod 755 {} \;
+          find out -name "headless_shell" -exec chmod 755 {} \;
+          find out -name "*.sh" -exec chmod 755 {} \;
+          
+          # Permisos para librerías
+          find out/lib64 -name "*.so*" -exec chmod 755 {} \;
+
+      - name: Show final structure
+        run: |
+          echo "=== Tamaño final ==="
+          du -sh out
+          
+          echo "=== Archivos clave ==="
+          echo "Chromium:"
+          find out -name "chrome" -o -name "headless_shell" | xargs -I {} ls -la {} 2>/dev/null || echo "No chromium found"
+          
+          echo "Playwright:"
+          find out/python -path "*/playwright/__init__.py" | head -1 | xargs ls -la 2>/dev/null || echo "No playwright found"
+          
+          echo "Librerías:"
+          ls out/lib64/*.so 2>/dev/null | head -10 || echo "No libraries found"
+
+      - name: Zip layer
         run: |
           cd out
-          zip -r ../playwright_chromium_layer.zip .
+          zip -9 -r ../playwright_layer_py312.zip .
           cd ..
-          echo "Layer size:"
-          ls -lh playwright_chromium_layer.zip
+          echo "Layer creada:"
+          ls -lh playwright_layer_py312.zip
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: playwright-chromium-layer
-          path: playwright_chromium_layer.zip
+          name: playwright-layer-py312
+          path: playwright_layer_py312.zip
