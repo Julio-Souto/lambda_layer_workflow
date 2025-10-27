@@ -96,7 +96,7 @@ jobs:
               chown -R 1000:1000 /out || true; \
               echo '=== done inside amazonlinux container ==='"
 
-      - name: Post-process out: move browsers if installed inside site-packages
+      - name: Post-process out move browsers if installed inside site-packages
         run: |
           set -e
           if [ -d out/python/lib/python3.12/site-packages/playwright ]; then
