@@ -50,7 +50,6 @@ jobs:
               yum -y install -y nspr nss nss-util dbus-glib atk at-spi2-atk expat cairo libX11 libXcomposite libXcursor libXdamage libXrandr libXtst libXrender libXfixes libXext libXScrnSaver libxcb libxshmfence libxkbcommon mesa-libgbm libdrm alsa-lib gtk3 pango || true; \
               echo 'python3 info:'; python3 --version || true; \
               echo 'detect python minor version with python -c (robust)'; \
-              # FIX: Mejorar la detección de versión de Python
               PYVER=\$(python3 -c 'import sys; print(f\"{sys.version_info.major}.{sys.version_info.minor}\")' 2>/dev/null || python3 -c 'import sys; v=sys.version_info; print(\"%d.%d\" % (v.major, v.minor))' 2>/dev/null || echo '3.9'); \
               echo \"Detected python version inside container: \$PYVER\"; \
               OUT_SITE=\"/out/python/lib/python\${PYVER}/site-packages\"; \
@@ -73,7 +72,6 @@ jobs:
               export PYTHONPATH=\"\$OUT_SITE\"; \
               export PLAYWRIGHT_BROWSERS_PATH=/tmp/ms-playwright; \
               echo \"PYTHONPATH=\${PYTHONPATH:-}\"; echo \"PLAYWRIGHT_BROWSERS_PATH=\${PLAYWRIGHT_BROWSERS_PATH:-}\"; \
-              # FIX: Evitar --with-deps en Amazon Linux
               PYTHONPATH=\"\$PYTHONPATH\" PLAYWRIGHT_BROWSERS_PATH=\"\$PLAYWRIGHT_BROWSERS_PATH\" python3 -m playwright install chromium 2>&1 | tee /tmp/playwright-install.log || true; \
               echo 'copy browsers to /out/.cache/ms-playwright'; \
               mkdir -p /out/.cache/ms-playwright || true; \
@@ -88,36 +86,55 @@ jobs:
               echo 'save logs into /out and fix perms'; \
               chmod -R a+rwX /out || true; \
               if [ -f /tmp/playwright-install.log ]; then cp /tmp/playwright-install.log /out/playwright-install.log || true; fi; \
-              FIND_PATH=\$(which find 2>/dev/null || echo /usr/bin/find); \
-              echo \"Using find at: \$FIND_PATH\"; \
-              \$FIND_PATH /out -type f -name headless_shell -exec chmod +x {} \\; || true; \
-              \$FIND_PATH /out -type f -name chrome -exec chmod +x {} \\; || true; \
-              chown -R 1000:1000 /out || true; \
+              # FIX: Usar find de manera más robusta
+              if command -v find >/dev/null 2>&1; then \
+                find /out -type f -name headless_shell -exec chmod +x {} + 2>/dev/null || true; \
+                find /out -type f -name chrome -exec chmod +x {} + 2>/dev/null || true; \
+              else \
+                echo 'find command not available, skipping executable permissions'; \
+              fi; \
+              # FIX: No cambiar ownership, solo permisos
               echo 'amazonlinux container step complete'"
+
+      - name: Fix permissions in runner
+        run: |
+          # Arreglar permisos en el runner (no en el contenedor)
+          sudo chmod -R a+rwX out || true
+          # Solo cambiar ownership si es necesario y posible
+          if [ "$(id -u)" = "0" ] || [ "$(id -u)" = "1001" ]; then
+            sudo chown -R $(id -u):$(id -g) out || true
+          fi
 
       - name: Post process move browsers
         run: |
           set -e
+          # Primero arreglar permisos localmente
+          sudo chmod -R a+rwX out || true
+          
           if [ -d out/python ]; then
-            python_dirs=$(find out/python -maxdepth 3 -type d -name "site-packages" -print || true)
+            python_dirs=$(find out/python -maxdepth 3 -type d -name "site-packages" -print 2>/dev/null || true)
             for d in $python_dirs; do
               if [ -d "$d/playwright" ]; then
                 echo "Found playwright in $d"
-                candidates=$(find "$d/playwright" -maxdepth 4 -type d -name "chrome-linux" -print || true)
+                candidates=$(find "$d/playwright" -maxdepth 4 -type d -name "chrome-linux" -print 2>/dev/null || true)
                 if [ -n "$candidates" ]; then
                   mkdir -p out/.cache/ms-playwright
                   for c in $candidates; do
                     src=$(dirname "$(dirname "$c")")
-                    cp -a "$src"/* out/.cache/ms-playwright/ || true
+                    cp -a "$src"/* out/.cache/ms-playwright/ 2>/dev/null || true
                   done
                 fi
               fi
             done
           fi
-          chmod -R a+rX out/.cache/ms-playwright || true
+          # FIX: Usar sudo para chmod si es necesario
+          if [ -d out/.cache/ms-playwright ]; then
+            sudo chmod -R a+rX out/.cache/ms-playwright || true
+          fi
 
       - name: Show out size and sample files
         run: |
+          sudo chmod -R a+rwX out || true
           du -sh out || true
           echo "OUT TOP LEVEL"
           ls -la out || true
