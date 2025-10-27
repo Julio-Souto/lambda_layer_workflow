@@ -49,8 +49,8 @@ jobs:
               echo 'install common libs for chromium (tolerate failures)'; \
               yum -y install -y nspr nss nss-util dbus-glib atk at-spi2-atk expat cairo libX11 libXcomposite libXcursor libXdamage libXrandr libXtst libXrender libXfixes libXext libXScrnSaver libxcb libxshmfence libxkbcommon mesa-libgbm libdrm alsa-lib gtk3 pango || true; \
               echo 'python3 info:'; which python3 || true; python3 --version || true; \
-              # detect python minor version safely without f-strings
-              PYVER=$(python3 -c \"import sys; print('{}.{}'.format(sys.version_info.major, sys.version_info.minor))\"); \
+              echo 'detect python minor version using python3 -V and awk'; \
+              PYVER=$(python3 -V 2>&1 | awk '{v=$2; split(v,a,\".\"); print a[1]\".\"a[2]}'); \
               echo \"Detected python version inside container: $PYVER\"; \
               OUT_SITE=/out/python/lib/python${PYVER}/site-packages; \
               mkdir -p \"$OUT_SITE\"; \
@@ -62,9 +62,9 @@ jobs:
                 python3 /tmp/get-pip.py || true; \
               fi; \
               python3 -m pip install --upgrade pip setuptools wheel || true; \
-              echo 'install python wheels into $OUT_SITE from wheelhouse if possible (skip if incompatible)'; \
+              echo 'install python wheels into $OUT_SITE from wheelhouse if possible'; \
               python3 -m pip install --no-index --find-links=/wheels --no-deps --target=\"$OUT_SITE\" -r /requirements.txt || true; \
-              echo 'install playwright into $OUT_SITE to make module available for this python interpreter'; \
+              echo 'install playwright into $OUT_SITE to make module available for python3'; \
               python3 -m pip install --no-deps --upgrade playwright --target=\"$OUT_SITE\" || true; \
               echo 'chmod out'; chmod -R a+rwX /out || true; \
               echo 'set PYTHONPATH and PLAYWRIGHT_BROWSERS_PATH then run playwright install'; \
