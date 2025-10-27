@@ -50,10 +50,12 @@ jobs:
               yum -y install -y nspr nss nss-util dbus-glib atk at-spi2-atk expat cairo libX11 libXcomposite libXcursor libXdamage libXrandr libXtst libXrender libXfixes libXext libXScrnSaver libxcb libxshmfence libxkbcommon mesa-libgbm libdrm alsa-lib gtk3 pango || true; \
               echo 'python3 info:'; python3 --version || true; \
               echo 'detect python minor version with python -c (robust)'; \
-              PYVER=$(python3 -c 'import sys; v=sys.version_info; print(\"%d.%d\" % (v.major, v.minor))' 2>/dev/null) || PYVER=3.9; \
-              echo \"Detected python version inside container: $PYVER\"; \
-              OUT_SITE=/out/python/lib/python${PYVER}/site-packages; \
-              mkdir -p \"$OUT_SITE\"; \
+              # FIX: Mejorar la detección de versión de Python
+              PYVER=\$(python3 -c 'import sys; print(f\"{sys.version_info.major}.{sys.version_info.minor}\")' 2>/dev/null || python3 -c 'import sys; v=sys.version_info; print(\"%d.%d\" % (v.major, v.minor))' 2>/dev/null || echo '3.9'); \
+              echo \"Detected python version inside container: \$PYVER\"; \
+              OUT_SITE=\"/out/python/lib/python\${PYVER}/site-packages\"; \
+              echo \"OUT_SITE path: \$OUT_SITE\"; \
+              mkdir -p \"\$OUT_SITE\"; \
               echo 'ensure pip exists'; \
               python3 -m ensurepip --upgrade || true; \
               if ! python3 -m pip --version >/dev/null 2>&1; then \
@@ -62,33 +64,34 @@ jobs:
                 python3 /tmp/get-pip.py || true; \
               fi; \
               python3 -m pip install --upgrade pip setuptools wheel || true; \
-              echo 'install python wheels into $OUT_SITE from wheelhouse if possible'; \
-              python3 -m pip install --no-index --find-links=/wheels --no-deps --target=\"$OUT_SITE\" -r /requirements.txt || true; \
-              echo 'install playwright into $OUT_SITE to make module available for python3'; \
-              python3 -m pip install --no-deps --upgrade playwright --target=\"$OUT_SITE\" || true; \
+              echo 'install python wheels into \$OUT_SITE from wheelhouse if possible'; \
+              python3 -m pip install --no-index --find-links=/wheels --no-deps --target=\"\$OUT_SITE\" -r /requirements.txt || true; \
+              echo 'install playwright into \$OUT_SITE to make module available for python3'; \
+              python3 -m pip install --no-deps --upgrade playwright --target=\"\$OUT_SITE\" || true; \
               echo 'chmod out'; chmod -R a+rwX /out || true; \
               echo 'set PYTHONPATH and PLAYWRIGHT_BROWSERS_PATH then run playwright install'; \
-              export PYTHONPATH=\"$OUT_SITE\"; \
+              export PYTHONPATH=\"\$OUT_SITE\"; \
               export PLAYWRIGHT_BROWSERS_PATH=/tmp/ms-playwright; \
-              echo \"PYTHONPATH=${PYTHONPATH:-}\"; echo \"PLAYWRIGHT_BROWSERS_PATH=${PLAYWRIGHT_BROWSERS_PATH:-}\"; \
-              PYTHONPATH=\"$PYTHONPATH\" PLAYWRIGHT_BROWSERS_PATH=\"$PLAYWRIGHT_BROWSERS_PATH\" python3 -m playwright install --with-deps chromium 2>&1 | tee /tmp/playwright-install.log || true; \
+              echo \"PYTHONPATH=\${PYTHONPATH:-}\"; echo \"PLAYWRIGHT_BROWSERS_PATH=\${PLAYWRIGHT_BROWSERS_PATH:-}\"; \
+              # FIX: Evitar --with-deps en Amazon Linux
+              PYTHONPATH=\"\$PYTHONPATH\" PLAYWRIGHT_BROWSERS_PATH=\"\$PLAYWRIGHT_BROWSERS_PATH\" python3 -m playwright install chromium 2>&1 | tee /tmp/playwright-install.log || true; \
               echo 'copy browsers to /out/.cache/ms-playwright'; \
               mkdir -p /out/.cache/ms-playwright || true; \
               cp -a /tmp/ms-playwright/* /out/.cache/ms-playwright/ 2>/dev/null || true; \
               echo 'collect native libs into /out/lib64 if present'; \
               mkdir -p /out/lib64 || true; \
               for lib in libnspr4.so libnss3.so libnssutil3.so libdbus-1.so libatk-1.0.so libatk-bridge-2.0.so libexpat.so.1 libatspi.so.0 libX11.so.6 libXcomposite.so.1 libXdamage.so.1 libXext.so.6 libXfixes.so.3 libXrandr.so.2 libgbm.so.1 libxcb.so.1 libxkbcommon.so.0 libudev.so.1 libasound.so.2; do \
-                for p in /usr/lib64/$lib /usr/lib/$lib /lib64/$lib /lib/$lib; do \
-                  if [ -f \"$p\" ]; then cp -v \"$p\" /out/lib64/ || true; fi; \
+                for p in /usr/lib64/\$lib /usr/lib/\$lib /lib64/\$lib /lib/\$lib; do \
+                  if [ -f \"\$p\" ]; then cp -v \"\$p\" /out/lib64/ || true; fi; \
                 done; \
               done; \
               echo 'save logs into /out and fix perms'; \
               chmod -R a+rwX /out || true; \
               if [ -f /tmp/playwright-install.log ]; then cp /tmp/playwright-install.log /out/playwright-install.log || true; fi; \
-              FIND_PATH=$(which find 2>/dev/null || echo /usr/bin/find); \
-              echo \"Using find at: $FIND_PATH\"; \
-              $FIND_PATH /out -type f -name headless_shell -exec chmod +x {} \\; || true; \
-              $FIND_PATH /out -type f -name chrome -exec chmod +x {} \\; || true; \
+              FIND_PATH=\$(which find 2>/dev/null || echo /usr/bin/find); \
+              echo \"Using find at: \$FIND_PATH\"; \
+              \$FIND_PATH /out -type f -name headless_shell -exec chmod +x {} \\; || true; \
+              \$FIND_PATH /out -type f -name chrome -exec chmod +x {} \\; || true; \
               chown -R 1000:1000 /out || true; \
               echo 'amazonlinux container step complete'"
 
