@@ -29,51 +29,74 @@ jobs:
         run: |
           rm -rf out || true
           mkdir -p out/python/lib/python3.12/site-packages
+          mkdir -p out/lib64
           chmod -R a+rwX out || true
 
-      - name: Build layer in Lambda Python 3.12 image (install packages + browsers)
+      - name: Build layer in Amazon Linux 2023 image (system libs + python packages + browsers)
         run: |
           set -e
+          # Ejecutar amazonlinux:2023 para instalar deps nativas, pip instal, y playwright install
           docker run --rm \
             --entrypoint /bin/bash \
             -v "${{ github.workspace }}/wheelhouse":/wheels \
             -v "${{ github.workspace }}/out":/out \
             -v "${{ github.workspace }}/requirements.txt":/requirements.txt \
-            public.ecr.aws/lambda/python:3.12 -lc "\
+            public.ecr.aws/amazonlinux/amazonlinux:2023 -lc "\
               set -e; \
+              echo '=== Updating system and installing OS packages required by Chromium ==='; \
               yum -y update || true; \
-              yum -y install -y python3-pip python3-devel tar xz unzip fontconfig freetype freetype-devel glibc-langpack-en \
-                libX11 libXcomposite libXcursor libXdamage libXrandr libXtst libXrender libxcb libxshmfence libxkbcommon \
-                atk gtk3 pango alsa-lib cups-libs dbus-glib \
-                libnss3 nspr atk at-spi2-atk cups-libs libdrm dbus-glib libXScrnSaver cairo \
-                || true; \
+              yum -y install -y \
+                python3 python3-pip python3-devel tar xz unzip fontconfig freetype freetype-devel glibc-langpack-en \
+                nspr nss nss-util dbus-glib atk at-spi2-atk expat libX11 libXcomposite libXcursor libXdamage libXrandr libXtst \
+                libXrender libXfixes libXext libXrandr libXScrnSaver libxcb libxshmfence libxkbcommon \
+                mesa-libgbm libdrm alsa-lib gtk3 pango cairo libudev freetype fontconfig which || true; \
+              echo '=== Upgrade pip tools inside container ==='; \
               python3 -m pip install --upgrade pip setuptools wheel || true; \
-              # instalar Playwright PRIMERO en el sistema
-              python3 -m pip install playwright || true; \
-              # configurar variables de entorno para evitar la instalación automática de dependencias
-              export PLAYWRIGHT_SKIP_BROWSERS_DOWNLOAD=0; \
-              export PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS=true; \
-              # instalar Chromium SIN --with-deps (ya instalamos las dependencias manualmente)
-              export PLAYWRIGHT_BROWSERS_PATH=/tmp/ms-playwright; \
-              python3 -m playwright install chromium 2>&1 | tee /tmp/playwright-install.log; \
-              # ahora instalar dependencias en /out
+              echo '=== Install python wheels into /out (no-index, from wheelhouse) ==='; \
               python3 -m pip install --no-index --find-links=/wheels --no-deps --target=/out/python/lib/python3.12/site-packages -r /requirements.txt || true; \
-              python3 -m pip install playwright --target=/out/python/lib/python3.12/site-packages || true; \
-              # copiar los navegadores instalados
-              mkdir -p /out/.cache/ms-playwright; \
-              cp -r /tmp/ms-playwright/* /out/.cache/ms-playwright/ 2>/dev/null || true; \
+              echo '=== Ensure Playwright package present in /out ==='; \
+              python3 -m pip install --no-deps --upgrade playwright --target=/out/python/lib/python3.12/site-packages || true; \
               chmod -R a+rwX /out || true; \
-              chmod -R a+rX /out || true; \
-              # forzar permisos ejecutables
-              if find /out -type f -name headless_shell | grep -q headless_shell; then \
-                find /out -type f -name headless_shell -exec chmod +x {} \\; || true; \
-              fi; \
-              if find /out -type f -name chrome | grep -q chrome; then \
-                find /out -type f -name chrome -exec chmod +x {} \\; || true; \
-              fi; \
-              chown -R 1000:1000 /out || true"
+              echo '=== Install Chromium browsers into /tmp (then copy to /out) ==='; \
+              export PLAYWRIGHT_BROWSERS_PATH=/tmp/ms-playwright; \
+              export PYTHONPATH=/out/python/lib/python3.12/site-packages; \
+              PYTHONPATH=$PYTHONPATH PLAYWRIGHT_BROWSERS_PATH=$PLAYWRIGHT_BROWSERS_PATH \
+                python3 -m playwright install --with-deps chromium 2>&1 | tee /tmp/playwright-install.log || true; \
+              echo '=== copy browsers from /tmp to /out ==='; \
+              mkdir -p /out/.cache/ms-playwright; \
+              cp -a /tmp/ms-playwright/* /out/.cache/ms-playwright/ 2>/dev/null || true; \
+              echo '=== Collect native libs for layer into /out/lib64 ==='; \
+              mkdir -p /out/lib64; \
+              # copiar librerías necesarias (selección basada en los errores típicos) \
+              cp -v /usr/lib64/libnspr4.so* /out/lib64/ 2>/dev/null || true; \
+              cp -v /usr/lib64/libnss3.so* /out/lib64/ 2>/dev/null || true; \
+              cp -v /usr/lib64/libnssutil3.so* /out/lib64/ 2>/dev/null || true; \
+              cp -v /usr/lib64/libdbus-1.so* /out/lib64/ 2>/dev/null || true; \
+              cp -v /usr/lib64/libatk-1.0.so* /out/lib64/ 2>/dev/null || true; \
+              cp -v /usr/lib64/libatk-bridge-2.0.so* /out/lib64/ 2>/dev/null || true; \
+              cp -v /usr/lib64/libexpat.so* /out/lib64/ 2>/dev/null || true; \
+              cp -v /usr/lib64/libatspi.so* /out/lib64/ 2>/dev/null || true; \
+              cp -v /usr/lib64/libX11.so* /out/lib64/ 2>/dev/null || true; \
+              cp -v /usr/lib64/libXcomposite.so* /out/lib64/ 2>/dev/null || true; \
+              cp -v /usr/lib64/libXdamage.so* /out/lib64/ 2>/dev/null || true; \
+              cp -v /usr/lib64/libXext.so* /out/lib64/ 2>/dev/null || true; \
+              cp -v /usr/lib64/libXfixes.so* /out/lib64/ 2>/dev/null || true; \
+              cp -v /usr/lib64/libXrandr.so* /out/lib64/ 2>/dev/null || true; \
+              cp -v /usr/lib64/libgbm.so* /out/lib64/ 2>/dev/null || true; \
+              cp -v /usr/lib64/libxcb.so* /out/lib64/ 2>/dev/null || true; \
+              cp -v /usr/lib64/libxkbcommon.so* /out/lib64/ 2>/dev/null || true; \
+              cp -v /usr/lib64/libudev.so* /out/lib64/ 2>/dev/null || true; \
+              cp -v /usr/lib64/libasound.so* /out/lib64/ 2>/dev/null || true; \
+              echo '=== Fix perms and set executables ==='; \
+              chmod -R a+rwX /out || true; \
+              find /out -type f -name headless_shell -exec chmod +x {} \\; || true; \
+              find /out -type f -name chrome -exec chmod +x {} \\; || true; \
+              echo '=== Save container logs (playwright install) to /out ==='; \
+              if [ -f /tmp/playwright-install.log ]; then cp /tmp/playwright-install.log /out/playwright-install.log || true; fi; \
+              chown -R 1000:1000 /out || true; \
+              echo '=== done inside amazonlinux container ==='"
 
-      - name: Post-process out move browsers if installed inside site-packages
+      - name: Post-process out: move browsers if installed inside site-packages
         run: |
           set -e
           if [ -d out/python/lib/python3.12/site-packages/playwright ]; then
@@ -91,9 +114,20 @@ jobs:
       - name: Show out size and sample files
         run: |
           du -sh out || true
+          echo "TOP-LEVEL OUT:"
           ls -la out || true
+          echo "SITE-PACKAGES:"
           ls -la out/python/lib/python3.12/site-packages | head -n 160 || true
+          if [ -d out/.cache/ms-playwright ]; then
+            echo ".cache content sample:"
+            ls -la out/.cache/ms-playwright | head -n 40 || true
+          fi
+          if [ -d out/lib64 ]; then
+            echo "lib64 sample:"
+            ls -la out/lib64 | head -n 80 || true
+          fi
           if [ -f out/playwright-install.log ]; then
+            echo "playwright-install.log tail:"
             tail -n 400 out/playwright-install.log || true
           fi
 
