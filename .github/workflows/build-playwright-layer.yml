@@ -49,8 +49,8 @@ jobs:
               echo 'install common libs for chromium (tolerate failures)'; \
               yum -y install -y nspr nss nss-util dbus-glib atk at-spi2-atk expat cairo libX11 libXcomposite libXcursor libXdamage libXrandr libXtst libXrender libXfixes libXext libXScrnSaver libxcb libxshmfence libxkbcommon mesa-libgbm libdrm alsa-lib gtk3 pango || true; \
               echo 'python3 info:'; which python3 || true; python3 --version || true; \
-              # detect python minor version (eg 3.11 -> 3.11)
-              PYVER=$(python3 -c \"import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')\"); \
+              # detect python minor version safely without f-strings
+              PYVER=$(python3 -c \"import sys; print('{}.{}'.format(sys.version_info.major, sys.version_info.minor))\"); \
               echo \"Detected python version inside container: $PYVER\"; \
               OUT_SITE=/out/python/lib/python${PYVER}/site-packages; \
               mkdir -p \"$OUT_SITE\"; \
@@ -71,7 +71,6 @@ jobs:
               export PYTHONPATH=\"$OUT_SITE\"; \
               export PLAYWRIGHT_BROWSERS_PATH=/tmp/ms-playwright; \
               echo \"PYTHONPATH=${PYTHONPATH:-}\"; echo \"PLAYWRIGHT_BROWSERS_PATH=${PLAYWRIGHT_BROWSERS_PATH:-}\"; \
-              # run playwright install using the interpreter that will load modules from $OUT_SITE
               PYTHONPATH=\"$PYTHONPATH\" PLAYWRIGHT_BROWSERS_PATH=\"$PLAYWRIGHT_BROWSERS_PATH\" python3 -m playwright install --with-deps chromium 2>&1 | tee /tmp/playwright-install.log || true; \
               echo 'copy browsers to /out/.cache/ms-playwright'; \
               mkdir -p /out/.cache/ms-playwright || true; \
@@ -97,7 +96,6 @@ jobs:
         run: |
           set -e
           if [ -d out/python ]; then
-            # detect installed site-packages dir(s)
             python_dirs=$(find out/python -maxdepth 3 -type d -name "site-packages" -print || true)
             for d in $python_dirs; do
               if [ -d "$d/playwright" ]; then
