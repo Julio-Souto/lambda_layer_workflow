@@ -23,13 +23,13 @@ jobs:
           mkdir -p wheelhouse
           docker run --rm -v "${{ github.workspace }}/wheelhouse":/wheels -v "${{ github.workspace }}/requirements.txt":/requirements.txt \
             quay.io/pypa/manylinux_2_28_x86_64:latest /bin/bash -lc "\
-              /opt/python/cp312-cp312/bin/pip wheel --no-deps --wheel-dir=/wheels -r /requirements.txt && \
-              chown -R $(id -u):$(id -g) /wheels"
+              /opt/python/cp312-cp312/bin/pip wheel --no-deps --wheel-dir=/wheels -r /requirements.txt || true; \
+              chown -R $(id -u):$(id -g) /wheels || true"
 
       - name: Prepare out directory
         run: |
           rm -rf out || true
-          mkdir -p out/python/lib/python3.12/site-packages
+          mkdir -p out/python
           mkdir -p out/lib64
           chmod -R a+rwX out || true
 
@@ -48,7 +48,12 @@ jobs:
               yum -y install -y which findutils python3 python3-devel python3-pip tar xz unzip curl fontconfig freetype freetype-devel glibc-langpack-en || true; \
               echo 'install common libs for chromium (tolerate failures)'; \
               yum -y install -y nspr nss nss-util dbus-glib atk at-spi2-atk expat cairo libX11 libXcomposite libXcursor libXdamage libXrandr libXtst libXrender libXfixes libXext libXScrnSaver libxcb libxshmfence libxkbcommon mesa-libgbm libdrm alsa-lib gtk3 pango || true; \
-              echo 'python3 info'; which python3 || true; python3 --version || true; \
+              echo 'python3 info:'; which python3 || true; python3 --version || true; \
+              # detect python minor version (eg 3.11 -> 3.11)
+              PYVER=$(python3 -c \"import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')\"); \
+              echo \"Detected python version inside container: $PYVER\"; \
+              OUT_SITE=/out/python/lib/python${PYVER}/site-packages; \
+              mkdir -p \"$OUT_SITE\"; \
               echo 'ensure pip exists'; \
               python3 -m ensurepip --upgrade || true; \
               if ! python3 -m pip --version >/dev/null 2>&1; then \
@@ -57,17 +62,18 @@ jobs:
                 python3 /tmp/get-pip.py || true; \
               fi; \
               python3 -m pip install --upgrade pip setuptools wheel || true; \
-              echo 'install python wheels into /out from wheelhouse'; \
-              python3 -m pip install --no-index --find-links=/wheels --no-deps --target=/out/python/lib/python3.12/site-packages -r /requirements.txt || true; \
-              echo 'install playwright into /out to make module available'; \
-              python3 -m pip install --no-deps --upgrade playwright --target=/out/python/lib/python3.12/site-packages || true; \
-              chmod -R a+rwX /out || true; \
+              echo 'install python wheels into $OUT_SITE from wheelhouse if possible (skip if incompatible)'; \
+              python3 -m pip install --no-index --find-links=/wheels --no-deps --target=\"$OUT_SITE\" -r /requirements.txt || true; \
+              echo 'install playwright into $OUT_SITE to make module available for this python interpreter'; \
+              python3 -m pip install --no-deps --upgrade playwright --target=\"$OUT_SITE\" || true; \
+              echo 'chmod out'; chmod -R a+rwX /out || true; \
               echo 'set PYTHONPATH and PLAYWRIGHT_BROWSERS_PATH then run playwright install'; \
-              export PYTHONPATH=/out/python/lib/python3.12/site-packages; \
+              export PYTHONPATH=\"$OUT_SITE\"; \
               export PLAYWRIGHT_BROWSERS_PATH=/tmp/ms-playwright; \
               echo \"PYTHONPATH=${PYTHONPATH:-}\"; echo \"PLAYWRIGHT_BROWSERS_PATH=${PLAYWRIGHT_BROWSERS_PATH:-}\"; \
-              PYTHONPATH=$PYTHONPATH PLAYWRIGHT_BROWSERS_PATH=$PLAYWRIGHT_BROWSERS_PATH python3 -m playwright install --with-deps chromium 2>&1 | tee /tmp/playwright-install.log || true; \
-              echo 'copy browsers to /out'; \
+              # run playwright install using the interpreter that will load modules from $OUT_SITE
+              PYTHONPATH=\"$PYTHONPATH\" PLAYWRIGHT_BROWSERS_PATH=\"$PLAYWRIGHT_BROWSERS_PATH\" python3 -m playwright install --with-deps chromium 2>&1 | tee /tmp/playwright-install.log || true; \
+              echo 'copy browsers to /out/.cache/ms-playwright'; \
               mkdir -p /out/.cache/ms-playwright || true; \
               cp -a /tmp/ms-playwright/* /out/.cache/ms-playwright/ 2>/dev/null || true; \
               echo 'collect native libs into /out/lib64 if present'; \
@@ -77,28 +83,37 @@ jobs:
                   if [ -f \"$p\" ]; then cp -v \"$p\" /out/lib64/ || true; fi; \
                 done; \
               done; \
-              echo 'set permissions and save log to /out'; \
+              echo 'save logs into /out and fix perms'; \
               chmod -R a+rwX /out || true; \
               if [ -f /tmp/playwright-install.log ]; then cp /tmp/playwright-install.log /out/playwright-install.log || true; fi; \
-              find /out -type f -name headless_shell -exec chmod +x {} \\; || true; \
-              find /out -type f -name chrome -exec chmod +x {} \\; || true; \
+              FIND_PATH=$(which find || echo /usr/bin/find); \
+              echo \"Using find at: $FIND_PATH\"; \
+              $FIND_PATH /out -type f -name headless_shell -exec chmod +x {} \\; || true; \
+              $FIND_PATH /out -type f -name chrome -exec chmod +x {} \\; || true; \
               chown -R 1000:1000 /out || true; \
-              echo 'container step complete'"
+              echo 'amazonlinux container step complete'"
 
       - name: Post process move browsers
         run: |
           set -e
-          if [ -d out/python/lib/python3.12/site-packages/playwright ]; then
-            candidates=$(find out/python/lib/python3.12/site-packages/playwright -maxdepth 4 -type d -name "chrome-linux" -print || true)
-            if [ -n "$candidates" ]; then
-              mkdir -p out/.cache/ms-playwright
-              for d in $candidates; do
-                src=$(dirname "$(dirname "$d")")
-                cp -a "$src"/* out/.cache/ms-playwright/ || true
-              done
-              chmod -R a+rX out/.cache/ms-playwright || true
-            fi
+          if [ -d out/python ]; then
+            # detect installed site-packages dir(s)
+            python_dirs=$(find out/python -maxdepth 3 -type d -name "site-packages" -print || true)
+            for d in $python_dirs; do
+              if [ -d "$d/playwright" ]; then
+                echo "Found playwright in $d"
+                candidates=$(find "$d/playwright" -maxdepth 4 -type d -name "chrome-linux" -print || true)
+                if [ -n "$candidates" ]; then
+                  mkdir -p out/.cache/ms-playwright
+                  for c in $candidates; do
+                    src=$(dirname "$(dirname "$c")")
+                    cp -a "$src"/* out/.cache/ms-playwright/ || true
+                  done
+                fi
+              fi
+            done
           fi
+          chmod -R a+rX out/.cache/ms-playwright || true
 
       - name: Show out size and sample files
         run: |
@@ -106,7 +121,7 @@ jobs:
           echo "OUT TOP LEVEL"
           ls -la out || true
           echo "SITE PACKAGES SAMPLE"
-          ls -la out/python/lib/python3.12/site-packages | head -n 160 || true
+          ls -la out/python | head -n 100 || true
           if [ -d out/.cache/ms-playwright ]; then
             echo ".cache sample"
             ls -la out/.cache/ms-playwright | head -n 40 || true
