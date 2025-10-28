@@ -13,126 +13,179 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
+      - name: Setup Python host helper
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.12"
+
+      - name: Create wheelhouse manylinux
+        run: |
+          mkdir -p wheelhouse
+          docker run --rm -v "${{ github.workspace }}/wheelhouse":/wheels -v "${{ github.workspace }}/requirements.txt":/requirements.txt \
+            quay.io/pypa/manylinux_2_28_x86_64:latest /bin/bash -lc "\
+              /opt/python/cp312-cp312/bin/pip wheel --no-deps --wheel-dir=/wheels -r /requirements.txt; \
+              chown -R $(id -u):$(id -g) /wheels"
+
       - name: Prepare out directory
         run: |
-          rm -rf out || true
+          rm -rf out
           mkdir -p out/python
           mkdir -p out/lib64
-          chmod -R 755 out || true
+          chmod -R 755 out
 
-      - name: Create build script for container
+      - name: Build layer in amazonlinux container
         run: |
-          cat > build_in_container.sh <<'SCRIPT'
-#!/usr/bin/env bash
-set -ex
-set -o pipefail
+          set -eo pipefail
+          echo "Starting amazonlinux container to build the layer"
+          
+          docker run --rm \
+            -v "${{ github.workspace }}/wheelhouse":/wheels \
+            -v "${{ github.workspace }}/out":/out \
+            -v "${{ github.workspace }}/requirements.txt":/requirements.txt \
+            public.ecr.aws/amazonlinux/amazonlinux:2023 \
+            bash -c "
+            # Enfoque minimalista: instalar solo lo absolutamente necesario
+            dnf install -y python3 python3-pip
+                        
+            # Configurar Python
+            PYVER=\$(python3 -c 'import sys; print(f\"{sys.version_info.major}.{sys.version_info.minor}\")')
+            OUT_SITE=\"/out/python/lib/python\$PYVER/site-packages\"
+            mkdir -p \"\$OUT_SITE\"
+            
+            # Instalar dependencias Python
+            python3 -m pip install --no-index --find-links=/wheels --no-deps --target=\"\$OUT_SITE\" -r /requirements.txt
+            python3 -m pip install playwright --target=\"\$OUT_SITE\"
+            
+            # Instalar Chromium SIN dependencias del sistema
+            export PLAYWRIGHT_BROWSERS_PATH=/out/ms-playwright
+            python3 -m playwright install chromium
+            
+            echo 'Build completed - Chromium installed with playwright'
+            "
 
-WORKSPACE="/workspace"
-OUT="/out"
-LOG="${OUT}/build.log"
-
-echo "Build script start: $(date)" | tee -a "$LOG"
-
-# minimal tools
-dnf -y update || true
-dnf -y install -y which findutils tar xz unzip curl fontconfig freetype glibc-langpack-en python3 python3-pip python3-devel || true
-
-# ensure pip present
-python3 -m ensurepip --upgrade || true
-if ! python3 -m pip --version >/dev/null 2>&1; then
-  curl -sS https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip.py || true
-  python3 /tmp/get-pip.py || true
-fi
-python3 -m pip install --upgrade pip setuptools wheel || true
-
-# detect python minor version
-PYVER=$(python3 -c 'import sys; v=sys.version_info; print("%d.%d" % (v.major, v.minor))')
-OUT_SITE="$OUT/python/lib/python${PYVER}/site-packages"
-mkdir -p "$OUT_SITE"
-chmod -R a+rwX "$OUT_SITE"
-
-# install playwright into OUT_SITE
-python3 -m pip install --no-deps --upgrade playwright --target="$OUT_SITE" || true
-
-# set env so python will pick up package; set browsers path for install
-export PYTHONPATH="$OUT_SITE"
-export PLAYWRIGHT_BROWSERS_PATH=/tmp/ms-playwright
-
-# install browsers to /tmp, capture log
-PYTHONPATH="$PYTHONPATH" PLAYWRIGHT_BROWSERS_PATH="$PLAYWRIGHT_BROWS_PATH" python3 -m playwright install --with-deps chromium 2>&1 | tee /tmp/playwright-install.log || true
-cp -v /tmp/playwright-install.log "$OUT/" || true
-
-# copy browsers into OUT
-mkdir -p "$OUT/.cache/ms-playwright"
-cp -a /tmp/ms-playwright/* "$OUT/.cache/ms-playwright/" 2>/dev/null || true
-
-# find headless binary
-HEADLESS_BIN="$(find "$OUT" -type f -name headless_shell -print -quit || true)"
-if [ -z "$HEADLESS_BIN" ]; then
-  HEADLESS_BIN="$(find "$OUT" -type f \( -name chrome -o -name chromium \) -print -quit || true)"
-fi
-echo "HEADLESS_BIN=${HEADLESS_BIN}" > "$OUT/build-info.txt"
-
-if [ -z "$HEADLESS_BIN" ]; then
-  echo "No headless binary found" | tee -a "$LOG"
-  exit 0
-fi
-
-# run ldd and save
-ldd "$HEADLESS_BIN" > "$OUT/ldd-headless.txt" 2>&1 || true
-
-# parse libs and copy
-mkdir -p "$OUT/lib64"
-LIBS=$(awk '{for(i=1;i<=NF;i++) if($i ~ /\.so/) print $i}' "$OUT/ldd-headless.txt" | sed 's/,//g' | sed 's/.*\///' | sort -u)
-copy_lib() {
-  name="$1"
-  for p in /usr/lib64 /usr/lib /lib64 /lib /opt/lib64; do
-    if [ -f "$p/$name" ]; then
-      cp -v "$p/$name" "$OUT/lib64/" && return 0
-    fi
-    for f in "$p/$name"*; do
-      [ -e "$f" ] || continue
-      cp -v "$f" "$OUT/lib64/" && return 0
-    done
-  done
-  echo "WARN: $name not found" >> "$OUT/ldd-missing.txt"
-  return 1
-}
-for lib in $LIBS; do
-  case "$lib" in
-    linux-vdso*|ld-linux*|ld64.so*) continue ;;
-  esac
-  copy_lib "$lib" || true
-done
-
-cp -v "$LOG" "$OUT/" || true
-chmod -R a+rwX "$OUT" || true
-echo "Container script done" | tee -a "$LOG"
-SCRIPT
-          chmod +x build_in_container.sh
-
-      - name: Run build script inside amazonlinux container
+      - name: Install system libraries separately
         run: |
-          docker run --rm -v "${{ github.workspace }}":/workspace -w /workspace public.ecr.aws/amazonlinux/amazonlinux:2023 /bin/bash /workspace/build_in_container.sh
+          set -eo pipefail
+          echo "Installing system libraries in a separate step to avoid conflicts"
+          
+          docker run --rm \
+            -v "${{ github.workspace }}/out":/out \
+            public.ecr.aws/amazonlinux/amazonlinux:2023 \
+            bash -c "
+            # Instalar librerías del sistema sin conflictos
+            dnf install -y \
+              nss nss-util nspr \
+              libX11 libXcomposite libXcursor libXdamage \
+              libXrandr libXrender libxcb \
+              atk at-spi2-core at-spi2-atk \
+              cups-libs libdrm mesa-libgbm \
+              alsa-lib pango \
+              fontconfig freetype
+            
+            # Copiar librerías críticas
+            mkdir -p /out/lib64
+            copy_lib() {
+              for path in /usr/lib64/\$1 /usr/lib/\$1 /lib64/\$1 /lib/\$1; do
+                if [ -f \"\$path\" ]; then
+                  cp \"\$path\" /out/lib64/ && echo \"Copied: \$path\" && return 0
+                fi
+              done
+              echo \"Warning: \$1 not found\"
+            }
+            
+            copy_lib 'libc.so.6'
+            copy_lib 'libstdc++.so.6'
+            copy_lib 'libgcc_s.so.1'
+            copy_lib 'libX11.so.6'
+            copy_lib 'libxkbcommon.so.0'
+            copy_lib 'libxcb.so.1'
+            copy_lib 'libXext.so.6'
+            copy_lib 'libXfixes.so.3'
+            copy_lib 'libXrandr.so.2'
+            copy_lib 'libXrender.so.1'
+            copy_lib 'libXcomposite.so.1'
+            copy_lib 'libXdamage.so.1'
+            copy_lib 'libXcursor.so.1'
+            copy_lib 'libXtst.so.6'
+            copy_lib 'libXss.so.1'
+            copy_lib 'libxshmfence.so.1'
+            copy_lib 'libgbm.so.1'
+            copy_lib 'libdrm.so.2'
+            copy_lib 'libglib-2.0.so.0'
+            copy_lib 'libgobject-2.0.so.0'
+            copy_lib 'libpango-1.0.so.0'
+            copy_lib 'libpangocairo-1.0.so.0'
+            copy_lib 'libcairo.so.2'
+            copy_lib 'libatk-1.0.so.0'
+            copy_lib 'libatk-bridge-2.0.so.0'
+            copy_lib 'libgtk-3.so.0'
+            copy_lib 'libfontconfig.so.1'
+            copy_lib 'libfreetype.so.6'
+            copy_lib 'libdbus-1.so.3'
+            copy_lib 'libasound.so.2'
+            copy_lib 'libpulse-simple.so.0'
+            copy_lib 'libpulse.so.0'
+            copy_lib 'libcups.so.2'
+            copy_lib 'libnspr4.so'
+            copy_lib 'libnss3.so'
+            copy_lib 'libnssutil3.so'
+            copy_lib 'libsmime3.so'
+            copy_lib 'libexpat.so.1'
+            copy_lib 'libatspi.so.0'
+            copy_lib 'libudev.so.1'
+            copy_lib 'libgconf-2.so.4'
+            copy_lib 'libplc4.so'
+            copy_lib 'libplds4.so'
+            copy_lib 'libsystemd.so.0'
+            "
 
-      - name: Show out contents (debug)
+      - name: Verify installation
         run: |
-          echo "=== /out tree ==="
-          find out -maxdepth 4 -ls || true
-          echo "=== build-info.txt ==="
-          [ -f out/build-info.txt ] && sed -n '1,200p' out/build-info.txt || echo "no build-info"
-          echo "=== ldd-headless.txt (tail) ==="
-          [ -f out/ldd-headless.txt ] && tail -n 200 out/ldd-headless.txt || echo "no ldd output"
-          echo "=== ldd-missing.txt ==="
-          [ -f out/ldd-missing.txt ] && cat out/ldd-missing.txt || echo "no missing libs file"
-          echo "=== playwright-install.log (tail) ==="
-          [ -f out/playwright-install.log ] && tail -n 200 out/playwright-install.log || echo "no playwright-install.log"
+          echo "=== Verificando instalación ==="
+          echo "Estructura de directorios:"
+          find out -type d | sort
+          
+          echo "=== Binarios de Chromium ==="
+          find out -name "chrome" -o -name "headless_shell" | xargs -I {} ls -la {} 2>/dev/null || echo "No binaries found"
+          
+          echo "=== Librerías ==="
+          ls -la out/lib64/ 2>/dev/null | head -10 || echo "No lib64 directory"
+          
+          echo "=== Playwright ==="
+          find out/python -name "playwright" -type d | head -2
+          docker run --rm -v "${{ github.workspace }}":/workspace -v "${{ github.workspace }}/out":/out -w /workspace public.ecr.aws/amazonlinux/amazonlinux:2023 /bin/bash /workspace/build_in_container.sh
+
+      - name: Fix permissions
+        run: |
+          # Permisos simples
+          find out -type d -exec chmod 755 {} \;
+          find out -type f -exec chmod 644 {} \;
+          
+          # Hacer ejecutables los binarios
+          find out -name "chrome" -exec chmod 755 {} \;
+          find out -name "headless_shell" -exec chmod 755 {} \;
+          
+          # Permisos para librerías
+          find out/lib64 -name "*.so*" -exec chmod 755 {} \; 2>/dev/null || true
+
+      - name: Show final structure
+        run: |
+          echo "=== Tamaño final ==="
+          du -sh out
+          
+          echo "=== Archivos clave ==="
+          echo "Chromium:"
+          find out -name "chrome" -o -name "headless_shell" 2>/dev/null | head -2 | xargs -I {} ls -la {} 2>/dev/null || echo "No chromium found"
+          
+          echo "Playwright:"
+          find out/python -path "*/playwright/__init__.py" 2>/dev/null | head -1 | xargs ls -la 2>/dev/null || echo "No playwright found"
 
       - name: Zip layer
         run: |
           cd out
           zip -9 -r ../playwright_layer_py312.zip .
           cd ..
+          echo "Layer creada:"
           ls -lh playwright_layer_py312.zip
 
       - name: Upload artifact
