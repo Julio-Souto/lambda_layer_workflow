@@ -102,6 +102,7 @@ jobs:
             copy_lib 'libX11.so.6'
             copy_lib 'libxcb.so.1'
             copy_lib 'libasound.so.2'
+            copy_lib 'libdbus-1.so.3'
             "
 
       - name: Verify installation
