@@ -33,6 +33,58 @@ jobs:
           mkdir -p out/lib64
           chmod -R 755 out || true
 
+      - name: Install system libraries separately
+        run: |
+          set -eo pipefail
+          echo "Installing system libraries (compatible with AL2023 and Debian)..."
+
+          docker run --rm \
+            -v "${{ github.workspace }}/out":/out \
+            public.ecr.aws/amazonlinux/amazonlinux:2023 \
+            bash -c '
+              dnf install -y \
+                nss nss-util nspr \
+                libX11 libXcomposite libXcursor libXdamage \
+                libXrandr libXrender libxcb \
+                atk at-spi2-core at-spi2-atk \
+                cups-libs libdrm mesa-libgbm \
+                alsa-lib pango \
+                fontconfig freetype dbus-libs systemd-libs \
+                gtk3 cairo cairo-gobject \
+                pulseaudio-libs xkeyboard-config
+
+              mkdir -p /out/lib64
+
+              # Detectar las rutas válidas de librerías (AmazonLinux o Debian)
+              LIB_PATHS="/usr/lib64 /usr/lib /lib64 /lib /usr/lib/x86_64-linux-gnu"
+              copy_lib() {
+                local lib=$1
+                for path in $LIB_PATHS; do
+                  if [ -f "$path/$lib" ]; then
+                    cp "$path/$lib" /out/lib64/ && echo "Copied: $path/$lib" && return 0
+                  fi
+                done
+                echo "Warning: $lib not found"
+              }
+
+              # Lista completa de librerías que Chromium puede requerir
+              LIBS=(
+                libnspr4.so libnss3.so libnssutil3.so libsmime3.so libplc4.so libplds4.so
+                libatk-1.0.so.0 libatk-bridge-2.0.so.0 libatspi.so.0
+                libdbus-1.so.3 libsystemd.so.0 libudev.so.1
+                libcairo.so.2 libcairo-gobject.so.2 libpango-1.0.so.0 libpangocairo-1.0.so.0
+                libX11.so.6 libXcomposite.so.1 libXdamage.so.1 libXext.so.6 libXfixes.so.3 libXrandr.so.2 libXrender.so.1 libxcb.so.1 libxkbcommon.so.0
+                libgbm.so.1 libdrm.so.2 libasound.so.2 libpulse.so.0 libpulse-simple.so.0
+                libgtk-3.so.0 libgdk-3.so.0 libgobject-2.0.so.0 libglib-2.0.so.0 libgio-2.0.so.0
+                libfreetype.so.6 libfontconfig.so.1 libexpat.so.1 libcups.so.2
+                libXcursor.so.1 libXtst.so.6 libXss.so.1 libxshmfence.so.1
+              )
+
+              for L in "${LIBS[@]}"; do
+                copy_lib "$L"
+              done
+            '
+            
       - name: Download Playwright browsers (Ubuntu)
         run: |
           echo "Downloading Playwright browsers inside Ubuntu (apt available)..."
