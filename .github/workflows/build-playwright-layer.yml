@@ -77,14 +77,14 @@ jobs:
                 libgbm.so.1 libdrm.so.2 libasound.so.2 libpulse.so.0 libpulse-simple.so.0
                 libgtk-3.so.0 libgdk-3.so.0 libgobject-2.0.so.0 libglib-2.0.so.0 libgio-2.0.so.0
                 libfreetype.so.6 libfontconfig.so.1 libexpat.so.1 libcups.so.2
-                libXcursor.so.1 libXtst.so.6 libXss.so.1 libxshmfence.so.1
+                libXcursor.so.1 libXtst.so.6 libXss.so.1 libxshmfence.so.1 libXi.so.6
               )
 
               for L in "${LIBS[@]}"; do
                 copy_lib "$L"
               done
             '
-            
+
       - name: Download Playwright browsers (Ubuntu)
         run: |
           echo "Downloading Playwright browsers inside Ubuntu (apt available)..."
