@@ -103,6 +103,7 @@ jobs:
             copy_lib 'libxcb.so.1'
             copy_lib 'libasound.so.2'
             copy_lib 'libdbus-1.so.3'
+            copy_lib 'libatk-1.0.so.0'
             "
 
       - name: Verify installation
