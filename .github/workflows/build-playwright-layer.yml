@@ -21,7 +21,9 @@ jobs:
       - name: Create wheelhouse manylinux
         run: |
           mkdir -p wheelhouse
-          docker run --rm -v "${{ github.workspace }}/wheelhouse":/wheels -v "${{ github.workspace }}/requirements.txt":/requirements.txt \
+          docker run --rm \
+            -v "${{ github.workspace }}/wheelhouse":/wheels \
+            -v "${{ github.workspace }}/requirements.txt":/requirements.txt \
             quay.io/pypa/manylinux_2_28_x86_64:latest /bin/bash -lc "\
               /opt/python/cp312-cp312/bin/pip wheel --no-deps --wheel-dir=/wheels -r /requirements.txt || true; \
               chown -R $(id -u):$(id -g) /wheels || true"
@@ -33,128 +35,143 @@ jobs:
           mkdir -p out/lib64
           chmod -R 755 out || true
 
-      - name: Create build script for container
+      - name: Create robust build script for container
         run: |
           cat > build_in_container.sh <<'SCRIPT'
-          #!/bin/bash
-          set -e
-          set -o pipefail
-          echo "Container script start: $(date)"
+#!/bin/bash
+set -ex
+set -o pipefail
 
-          # Paths inside container (workspace mounted at /workspace)
-          WORKSPACE="/workspace"
-          OUT="/out"
-          REQ="${WORKSPACE}/requirements.txt"
-          WHEELHOUSE="${WORKSPACE}/wheelhouse"
+WORKSPACE="/workspace"
+OUT="/out"
+WHEELHOUSE="${WORKSPACE}/wheelhouse"
+REQ="${WORKSPACE}/requirements.txt"
+LOG="${OUT}/build.log"
 
-          # Install dnf packages (tolerate failures)
-          echo "Installing system packages..."
-          dnf -y update || true
-          dnf -y install -y python3 python3-pip python3-devel findutils which tar xz unzip curl fontconfig freetype freetype-devel glibc-langpack-en || true
-          # libs commonly needed by chromium (install where possible)
-          dnf -y install -y nspr nss nss-util dbus-glib atk at-spi2-atk expat cairo libX11 libXcomposite libXcursor libXdamage libXrandr libXtst libXrender libXfixes libXext libXScrnSaver libxcb libxshmfence libxkbcommon mesa-libgbm libdrm alsa-lib gtk3 pango cups-libs || true
+echo "Build script start: $(date)" | tee -a "$LOG"
 
-          # Detect python minor version used inside container
-          PYVER=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
-          echo "Detected python version: $PYVER"
+# install minimal tools and libs (tolerate failures)
+echo "Installing base packages..." | tee -a "$LOG"
+dnf -y update || true
+dnf -y install -y which findutils tar xz unzip curl fontconfig freetype freetype-devel glibc-langpack-en python3 python3-pip python3-devel || true
 
-          OUT_SITE="$OUT/python/lib/python${PYVER}/site-packages"
-          mkdir -p "$OUT_SITE"
+# try to install common runtime libs to be able to run ldd & copy .so
+echo "Installing common libs that help ldd and runtime" | tee -a "$LOG"
+dnf -y install -y nspr nss nss-util dbus-glib atk at-spi2-atk expat cairo libX11 libXcomposite libXcursor libXdamage libXrandr libXtst libXrender libXfixes libXext libXScrnSaver libxcb libxshmfence libxkbcommon mesa-libgbm libdrm alsa-lib gtk3 pango cups-libs || true
 
-          # Upgrade pip and install wheels from wheelhouse into OUT_SITE
-          python3 -m pip install --upgrade pip setuptools wheel || true
-          if [ -f "$REQ" ]; then
-            python3 -m pip install --no-index --find-links="$WHEELHOUSE" --no-deps --target="$OUT_SITE" -r "$REQ" || true
-          fi
+# ensure pip is present
+python3 -m ensurepip --upgrade || true
+if ! python3 -m pip --version >/dev/null 2>&1; then
+  curl -sS https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip.py || true
+  python3 /tmp/get-pip.py || true
+fi
+python3 -m pip install --upgrade pip setuptools wheel || true
 
-          # Ensure playwright package is present in site-packages
-          python3 -m pip install --no-deps --upgrade playwright --target="$OUT_SITE" || true
+# detect python minor version (robusto)
+PYVER=$(python3 -c 'import sys; v=sys.version_info; print("%d.%d" % (v.major, v.minor))')
+echo "Detected python version: $PYVER" | tee -a "$LOG"
 
-          # Prepare env for playwright install
-          export PYTHONPATH="$OUT_SITE"
-          export PLAYWRIGHT_BROWSERS_PATH=/tmp/ms-playwright
+OUT_SITE="$OUT/python/lib/python${PYVER}/site-packages"
+mkdir -p "$OUT_SITE"
+chmod -R a+rwX "$OUT_SITE"
 
-          echo "PYTHONPATH=$PYTHONPATH"
-          echo "PLAYWRIGHT_BROWSERS_PATH=$PLAYWRIGHT_BROWSERS_PATH"
+# install wheels from wheelhouse (if present)
+if [ -f "$REQ" ]; then
+  echo "Installing requirements from wheelhouse into $OUT_SITE" | tee -a "$LOG"
+  python3 -m pip install --no-index --find-links="$WHEELHOUSE" --no-deps --target="$OUT_SITE" -r "$REQ" || true
+fi
 
-          # Install browsers into /tmp (then copy to /out)
-          PYTHONPATH="$PYTHONPATH" PLAYWRIGHT_BROWSERS_PATH="$PLAYWRIGHT_BROWSERS_PATH" python3 -m playwright install --with-deps chromium 2>&1 | tee /tmp/playwright-install.log || true
+# ensure playwright package is present in site-packages
+echo "Installing playwright package into $OUT_SITE" | tee -a "$LOG"
+python3 -m pip install --no-deps --upgrade playwright --target="$OUT_SITE" || true
 
-          # Copy browsers to out
-          mkdir -p "$OUT/.cache/ms-playwright"
-          cp -a /tmp/ms-playwright/* "$OUT/.cache/ms-playwright/" 2>/dev/null || true
-          cp /tmp/playwright-install.log "$OUT/" 2>/dev/null || true
+# set env so python will pick up the package
+export PYTHONPATH="$OUT_SITE"
+export PLAYWRIGHT_BROWSERS_PATH=/tmp/ms-playwright
+echo "PYTHONPATH=$PYTHONPATH" | tee -a "$LOG"
+echo "PLAYWRIGHT_BROWSERS_PATH=$PLAYWRIGHT_BROWS_PATH" | tee -a "$LOG" || true
 
-          # Find headless binary
-          HEADLESS_BIN="$(find "$OUT" -type f -name headless_shell -print -quit || true)"
-          if [ -z "$HEADLESS_BIN" ]; then
-            HEADLESS_BIN="$(find "$OUT" -type f -name chrome -o -name chromium -print -quit || true)"
-          fi
-          echo "HEADLESS_BIN=$HEADLESS_BIN" > "$OUT/build-info.txt"
+# Run playwright install to get browser binaries into /tmp
+echo "Running: python3 -m playwright install --with-deps chromium" | tee -a "$LOG"
+PYTHONPATH="$PYTHONPATH" PLAYWRIGHT_BROWSERS_PATH="$PLAYWRIGHT_BROWS_PATH" python3 -m playwright install --with-deps chromium 2>&1 | tee /tmp/playwright-install.log || true
+cp -v /tmp/playwright-install.log "$OUT/" || true
 
-          if [ -z "$HEADLESS_BIN" ]; then
-            echo "No headless binary found - quitting copy libs step" >> "$OUT/build-info.txt"
-            echo "Container script end: $(date)"
-            exit 0
-          fi
+# copy browsers into OUT
+mkdir -p "$OUT/.cache/ms-playwright"
+cp -a /tmp/ms-playwright/* "$OUT/.cache/ms-playwright/" 2>/dev/null || true
 
-          # Run ldd and save output
-          ldd "$HEADLESS_BIN" > "$OUT/ldd-headless.txt" 2>&1 || true
-          echo "ldd output saved to $OUT/ldd-headless.txt"
+# locate headless binary (headless_shell preferred)
+HEADLESS_BIN="$(find "$OUT" -type f -name headless_shell -print -quit || true)"
+if [ -z "$HEADLESS_BIN" ]; then
+  HEADLESS_BIN="$(find "$OUT" -type f \( -name chrome -o -name chromium \) -print -quit || true)"
+fi
+echo "HEADLESS_BIN=${HEADLESS_BIN}" | tee -a "$LOG"
+echo "HEADLESS_BIN=${HEADLESS_BIN}" > "$OUT/build-info.txt"
 
-          # Parse all referenced .so names from ldd output
-          LIBS=$(awk '{for(i=1;i<=NF;i++) if($i ~ /\.so/) print $i }' "$OUT/ldd-headless.txt" | sed 's/,//g' | sed 's/.*\///' | sort -u)
+if [ -z "$HEADLESS_BIN" ]; then
+  echo "ERROR: no headless binary found. See /tmp/playwright-install.log and $OUT/build-info.txt" | tee -a "$LOG"
+  ls -la "$OUT" | tee -a "$LOG"
+  exit 0
+fi
 
-          echo "Libraries referenced by binary:" >> "$OUT/build-info.txt"
-          echo "$LIBS" >> "$OUT/build-info.txt"
+# run ldd on the binary and save
+echo "Running ldd on $HEADLESS_BIN" | tee -a "$LOG"
+ldd "$HEADLESS_BIN" > "$OUT/ldd-headless.txt" 2>&1 || true
 
-          # Copy function: search common paths and copy file or versioned variants
-          copy_lib() {
-            name="$1"
-            for p in /usr/lib64 /usr/lib /lib64 /lib /opt/lib64 /usr/lib/x86_64-linux-gnu; do
-              if [ -f "$p/$name" ]; then
-                cp -v "$p/$name" "$OUT/lib64/" && return 0
-              fi
-              # glob for versions (e.g. libfoo.so.1.2)
-              for f in "$p/$name"*; do
-                [ -e "$f" ] || continue
-                cp -v "$f" "$OUT/lib64/" && return 0
-              done
-            done
-            # if not found, log warning
-            echo "WARN: lib $name not found in standard paths" >> "$OUT/build-info.txt"
-            return 1
-          }
+# parse .so names referenced by ldd (extract tokens containing .so)
+LIBS=$(awk '{for(i=1;i<=NF;i++) if($i ~ /\.so/) print $i}' "$OUT/ldd-headless.txt" | sed 's/,//g' | sed 's/.*\///' | sort -u)
+echo "Referenced libs:" | tee -a "$LOG"
+echo "$LIBS" | tee -a "$LOG"
 
-          mkdir -p "$OUT/lib64"
+# function to copy a lib by name (try several common paths and glob for versions)
+copy_lib() {
+  local name="$1"
+  for p in /usr/lib64 /usr/lib /lib64 /lib /opt/lib64 /usr/lib/x86_64-linux-gnu; do
+    if [ -f "$p/$name" ]; then
+      cp -v "$p/$name" "$OUT/lib64/" && return 0
+    fi
+    # try globbed versioned files
+    for f in "$p/$name"*; do
+      [ -e "$f" ] || continue
+      cp -v "$f" "$OUT/lib64/" && return 0
+    done
+  done
+  echo "WARN: not found lib $name" >> "$OUT/ldd-missing.txt"
+  return 1
+}
 
-          # Copy each lib referenced by ldd
-          for lib in $LIBS; do
-            # skip linux-vdso and ld-linux entries
-            case "$lib" in
-              linux-vdso*|ld-linux*|ld64.so*) continue ;;
-            esac
-            copy_lib "$lib" || true
-          done
+mkdir -p "$OUT/lib64"
 
-          # Also parse explicit "not found" entries and include them in a file
-          grep "not found" "$OUT/ldd-headless.txt" > "$OUT/ldd-missing.txt" || true
+# copy each lib referenced by ldd
+for lib in $LIBS; do
+  case "$lib" in
+    linux-vdso*|ld-linux*|ld64.so*) continue ;;
+  esac
+  copy_lib "$lib" || true
+done
 
-          # Ensure also we copy symlink targets for anything copied
-          for f in "$OUT/lib64"/*; do
-            if [ -L "$f" ]; then
-              real=$(readlink -f "$f")
-              if [ -f "$real" ] && [ "$real" != "$f" ]; then
-                cp -v "$real" "$OUT/lib64/" || true
-              fi
-            fi
-          done
+# also copy "not found" tokens explicitly listed in ldd output
+grep "not found" "$OUT/ldd-headless.txt" > "$OUT/ldd-missing.txt" || true
 
-          # Final perms and info
-          chmod -R a+rwX "$OUT"
-          echo "Container script done" >> "$OUT/build-info.txt"
-          echo "Container script end: $(date)"
-          SCRIPT
+# copy symlink targets for completeness
+for f in "$OUT/lib64"/*; do
+  if [ -L "$f" ]; then
+    real=$(readlink -f "$f" || true)
+    if [ -f "$real" ]; then
+      cp -v "$real" "$OUT/lib64/" || true
+    fi
+  fi
+done
+
+# Save build log
+echo "Build finished at $(date)" | tee -a "$LOG"
+cp -v "$LOG" "$OUT/" || true
+
+# ensure permissions
+chmod -R a+rwX "$OUT" || true
+
+echo "Container script done" | tee -a "$LOG"
+SCRIPT
           chmod +x build_in_container.sh
 
       - name: Run build script inside amazonlinux container
@@ -162,34 +179,28 @@ jobs:
           # mount whole workspace to /workspace so the script can access wheelhouse, requirements.txt and out
           docker run --rm -v "${{ github.workspace }}":/workspace -w /workspace public.ecr.aws/amazonlinux/amazonlinux:2023 /bin/bash -c "/workspace/build_in_container.sh"
 
-      - name: Verify installation
+      - name: Show out contents (debug)
         run: |
-          echo "=== Verifying output directory ==="
-          du -sh out || true
-          echo "=== Build info ==="
-          if [ -f out/build-info.txt ]; then
-            echo "---- build-info.txt ----"
-            tail -n +1 out/build-info.txt || true
-            echo "---- end build-info ----"
+          echo "=== /out tree ==="
+          find out -maxdepth 4 -ls || true
+          echo "=== build-info.txt ==="
+          [ -f out/build-info.txt ] && sed -n '1,200p' out/build-info.txt || echo "no build-info"
+          echo "=== ldd-headless.txt (tail) ==="
+          [ -f out/ldd-headless.txt ] && tail -n 200 out/ldd-headless.txt || echo "no ldd output"
+          echo "=== ldd-missing.txt ==="
+          [ -f out/ldd-missing.txt ] && cat out/ldd-missing.txt || echo "no missing libs file"
+          echo "=== playwright-install.log (tail) ==="
+          [ -f out/playwright-install.log ] && tail -n 200 out/playwright-install.log || echo "no playwright-install.log"
+
+      - name: Abort early if out is empty
+        run: |
+          if [ -z "$(find out -mindepth 1 -print -quit)" ]; then
+            echo "ERROR: out/ seems empty after build. Show /workspace for debugging:" >&2
+            ls -la || true
+            echo "Content of workspace (top):" >&2
+            find . -maxdepth 2 -ls || true
+            exit 1
           fi
-          echo "=== ldd output (headless) ==="
-          if [ -f out/ldd-headless.txt ]; then
-            tail -n 200 out/ldd-headless.txt || true
-          else
-            echo "No ldd output found"
-          fi
-          echo "=== Missing libs (ldd-missing.txt) ==="
-          if [ -f out/ldd-missing.txt ]; then
-            cat out/ldd-missing.txt || true
-          else
-            echo "No missing libs file"
-          fi
-          echo "=== lib64 sample ==="
-          ls -la out/lib64 | head -n 200 || true
-          echo "=== Playwright package location ==="
-          find out/python -maxdepth 4 -type d -name "playwright" -print || true
-          echo "=== Browser install location sample ==="
-          ls -la out/.cache/ms-playwright 2>/dev/null || true
 
       - name: Fix permissions
         run: |
@@ -203,10 +214,12 @@ jobs:
         run: |
           echo "=== Final size ==="
           du -sh out || true
-          echo "=== Chromium binaries ==="
-          find out -name "headless_shell" -o -name "chrome" -print -exec ls -la {} \; 2>/dev/null || true
-          echo "=== Playwright check ==="
-          find out/python -path "*/playwright/__init__.py" -print -exec ls -la {} \; 2>/dev/null || true
+          echo "=== Chromium binaries (ls) ==="
+          find out -type f \( -name "headless_shell" -o -name "chrome" -o -name "chromium" \) -print -exec ls -la {} \; || true
+          echo "=== Playwright (site-packages) ==="
+          find out/python -maxdepth 4 -type d -name "playwright" -print -exec ls -la {} \; 2>/dev/null || true
+          echo "=== lib64 sample ==="
+          ls -la out/lib64 | head -n 200 || true
 
       - name: Zip layer
         run: |
