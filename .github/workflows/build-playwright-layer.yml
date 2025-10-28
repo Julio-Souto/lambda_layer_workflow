@@ -87,8 +87,7 @@ jobs:
                 libXcursor.so.1 libXtst.so.6 libXss.so.1 libxshmfence.so.1 libXi.so.6 libgallium-24.2.6.so
                 libgallium-24.2.6.so libwayland-server.so.0 libxcb-randr.so.0 libXau.so.6 libglapi.so.0
                 libLLVM-15.so libX11-xcb.so.1 libxcb-dri3.so.0 libxcb-present.so.0 libxcb-xfixes.so.0
-                libxcb-sync.so.1 libsensors.so.4 libdrm_radeon.so.1 libdrm_amdgpu.so.1 libelf.so.1
-                libdrm_intel.so.1 libxcb-dri2.so.0 libX11-xcb.so.1 libxcb-dri3.so.0 libxcb-present.so.0 libxcb-xfixes.so.0
+                libxcb-sync.so.1 libsensors.so.4 libdrm_radeon.so.1 libdrm_amdgpu.so.1
                 libelf.so.1 libdrm_intel.so.1 libxcb-dri2.so.0 libedit.so.0 libpciaccess.so.0
               )
 
