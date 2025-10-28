@@ -35,7 +35,12 @@ jobs:
 
       - name: Run build script inside python:3.12 lambda image
         run: |
-          docker run --rm -v "${{ github.workspace }}":/workspace -v "${{ github.workspace }}/out":/out -w /workspace public.ecr.aws/lambda/python:3.12 /bin/bash /workspace/build_in_container.sh
+          docker run --rm --entrypoint /bin/bash \
+            -v "${{ github.workspace }}":/workspace \
+            -v "${{ github.workspace }}/out":/out \
+            -w /workspace \
+            public.ecr.aws/lambda/python:3.12 \
+            -c "/workspace/build_in_container.sh"
 
       - name: Show out contents (debug)
         run: |
