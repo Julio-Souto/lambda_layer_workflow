@@ -63,6 +63,62 @@ if [ -f "$REQ" ] && [ -d "$WHEELHOUSE" ]; then
   $PY_CMD -m pip install --no-index --find-links="$WHEELHOUSE" --no-deps --target="$OUT_SITE" -r "$REQ" || true
 fi
 
+echo "Instalando dependencias del sistema requeridas por Chromium (yum)..." | tee -a "$LOG"
+
+# Lista recomendada de paquetes para Amazon Linux / Lambda (AL2023)
+# Nota: algunos paquetes pueden ya estar instalados; usamos -y y toleramos fallos.
+yum -y update || true
+yum -y install -y \
+  alsa-lib \
+  atk \
+  at-spi2-atk \
+  dbus-glib \
+  cups-libs \
+  freetype \
+  fontconfig \
+  gtk3 \
+  libX11 \
+  libXcomposite \
+  libXcursor \
+  libXdamage \
+  libXrandr \
+  libXtst \
+  libXrender \
+  libXfixes \
+  libXext \
+  libXScrnSaver || true \
+  libxcb \
+  libxshmfence \
+  libxkbcommon \
+  mesa-libgbm \
+  libdrm \
+  nspr \
+  nss \
+  nss-util \
+  systemd-libs \
+  pango \
+  cairo \
+  alsa-lib \
+  pulseaudio-libs || true
+
+# También instalamos utilidades que Playwright usa al descargar
+yum -y install -y curl tar gzip unzip xz || true
+
+echo "Dependencias del sistema instaladas (o intentadas). Reintentando instalación de navegadores..." | tee -a "$LOG"
+
+# Evitar que Playwright intente ejecutar apt-get como fallback (si aún así lo hace)
+export PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS=1
+
+# Usamos el python apropiado (PY_CMD ya definido) y PYTHONPATH apuntando al target site-packages
+# Ejecutar instalación de navegadores SIN --with-deps (ya instalamos deps con yum)
+PYTHONPATH="$PYTHONPATH" PLAYWRIGHT_BROWSERS_PATH="$PLAYWRIGHT_BROWSERS_PATH" \
+  $PY_CMD -m playwright install chromium 2>&1 | tee /tmp/playwright-install.log || true
+
+# Copiar log y navegadores a /out
+cp -v /tmp/playwright-install.log "$OUT/" || true
+mkdir -p "$OUT/.cache/ms-playwright"
+cp -a /tmp/ms-playwright/* "$OUT/.cache/ms-playwright/" 2>/dev/null || true
+
 # Instalar playwright en el target site-packages
 echo "Installing playwright into $OUT_SITE" | tee -a "$LOG"
 $PY_CMD -m pip install --no-deps --upgrade playwright --target="$OUT_SITE" || true
