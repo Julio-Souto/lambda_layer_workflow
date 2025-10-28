@@ -78,7 +78,10 @@ jobs:
                 libgtk-3.so.0 libgdk-3.so.0 libgobject-2.0.so.0 libglib-2.0.so.0 libgio-2.0.so.0
                 libfreetype.so.6 libfontconfig.so.1 libexpat.so.1 libcups.so.2
                 libXcursor.so.1 libXtst.so.6 libXss.so.1 libxshmfence.so.1 libXi.so.6 libgallium-24.2.6.so
-                libgallium-24.2.6.so libwayland-server.so.0 libxcb-randr.so.0 libXau.so.6
+                libgallium-24.2.6.so libwayland-server.so.0 libxcb-randr.so.0 libXau.so.6 libglapi.so.0
+                libLLVM-15.so libX11-xcb.so.1 libxcb-dri3.so.0 libxcb-present.so.0 libxcb-xfixes.so.0
+                libxcb-sync.so.1 libsensors.so.4 libdrm_radeon.so.1 libdrm_amdgpu.so.1 libelf.so.1
+                libdrm_intel.so.1 libxcb-dri2.so.0
               )
 
               for L in "${LIBS[@]}"; do
@@ -145,12 +148,22 @@ jobs:
           find out -name "headless_shell" -o -name "chrome" -exec chmod 755 {} \; || true
           find out/lib64 -name "*.so*" -exec chmod 755 {} \; 2>/dev/null || true
 
-      - name: Zip layer
+      - name: Zip layer with proper structure
         run: |
           cd out
-          zip -9 -r ../playwright_layer_py312.zip .
+          # Crear estructura: .cache/ms-playwright/{chromium, lib64}
+          mkdir -p .cache/ms-playwright
+          mv python .cache/ms-playwright/ || true
+          # Mover chromium y librerías a la estructura correcta
+          if [ -d .cache/ms-playwright/python/lib/python3.12/site-packages/playwright/driver ]; then
+            cp -r .cache/ms-playwright/python/lib/python3.12/site-packages/playwright/driver/* .cache/ms-playwright/ || true
+          fi
+          # Mover librerías a lib64
+          mkdir -p .cache/ms-playwright/lib64
+          find . -name "*.so*" -type f -exec cp {} .cache/ms-playwright/lib64/ \; 2>/dev/null || true
+          # Crear zip
+          zip -r ../playwright_layer_py312.zip .cache
           cd ..
-          ls -lh playwright_layer_py312.zip
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
