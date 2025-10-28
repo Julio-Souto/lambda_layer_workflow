@@ -136,6 +136,7 @@ jobs:
             copy_lib 'libgconf-2.so.4'
             copy_lib 'libplc4.so'
             copy_lib 'libplds4.so'
+            copy_lib 'libsystemd.so.0'
             "
 
       - name: Verify installation
