@@ -33,6 +33,19 @@ jobs:
           mkdir -p out/lib64
           chmod -R 755 out || true
 
+      - name: Make build script executable / fix CRLF
+        run: |
+          # Asegúrate de que el script usa saltos de línea Unix (evita CRLF de Windows)
+          if [ -f build_in_container.sh ]; then
+            sed -i 's/\r$//' build_in_container.sh || true
+            chmod +x build_in_container.sh || true
+            echo "build_in_container.sh perms:"
+            ls -l build_in_container.sh
+          else
+            echo "build_in_container.sh not found!"
+            exit 1
+          fi
+
       - name: Run build script inside python:3.12 lambda image
         run: |
           docker run --rm --entrypoint /bin/bash \
