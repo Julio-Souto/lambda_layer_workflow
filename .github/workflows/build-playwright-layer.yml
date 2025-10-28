@@ -52,12 +52,18 @@ jobs:
                 alsa-lib pango \
                 fontconfig freetype dbus-libs systemd-libs \
                 gtk3 cairo cairo-gobject \
-                pulseaudio-libs xkeyboard-config
+                pulseaudio-libs xkeyboard-config \
+                mesa-libGL mesa-libGLU mesa-libGLES mesa-libEGL \
+                gstreamer1 gstreamer1-plugins-base \
+                libwayland-client libwayland-server \
+                harfbuzz harfbuzz-icu \
+                libicu openssl-libs
 
               mkdir -p /out/lib64
 
-              # Detectar las rutas válidas de librerías (AmazonLinux o Debian)
+              # Detectar las rutas válidas de librerías
               LIB_PATHS="/usr/lib64 /usr/lib /lib64 /lib /usr/lib/x86_64-linux-gnu"
+              
               copy_lib() {
                 local lib=$1
                 for path in $LIB_PATHS; do
@@ -89,6 +95,19 @@ jobs:
               for L in "${LIBS[@]}"; do
                 copy_lib "$L"
               done
+
+              # Además, copiar todas las variantes de las librerías (con versiones)
+              echo "Copiando variantes de librerías..."
+              for lib_base in libnspr4 libnss3 libnssutil3 libatk-1.0 libcairo libX11 libxcb libasound libpulse libGL libGLESv2 libEGL; do
+                for path in $LIB_PATHS; do
+                  if [ -d "$path" ]; then
+                    find "$path" -name "${lib_base}*.so*" -type f -exec cp {} /out/lib64/ \; 2>/dev/null || true
+                  fi
+                done
+              done
+
+              echo "Total de librerías copiadas:"
+              ls -1 /out/lib64/ | wc -l
             '
 
       - name: Download Playwright browsers (Ubuntu)
@@ -149,47 +168,88 @@ jobs:
           mkdir -p temp_python_layer
           mkdir -p temp_chromium_zip
           
+          echo "=== PREPARANDO ESTRUCTURA DE DIRECTORIOS ==="
+          
           # Mover librerías Python a su carpeta (sin .cache)
           if [ -d "out/python" ]; then
+            echo "Copiando librerías Python..."
             cp -r out/python temp_python_layer/
-            echo "Librerías Python copiadas a temp_python_layer/"
+            echo "✓ Librerías Python copiadas a temp_python_layer/"
+          else
+            echo "⚠ No se encontró out/python"
           fi
           
           # Mover chromium y librerías nativas a estructura separada
           if [ -d "out/.cache" ]; then
+            echo "Copiando chromium y caché..."
             cp -r out/.cache temp_chromium_zip/
-            echo "Chromium y librerías nativas copiadas a temp_chromium_zip/"
+            echo "✓ Chromium y caché copiados a temp_chromium_zip/"
           fi
           
-          # También buscar chromium en otros lugares
-          find out -name "chrome" -o -name "chromium" -o -name "headless_shell" | head -5 | while read bin; do
+          # Buscar chromium en otros lugares y copiar
+          echo "Buscando binarios de chromium..."
+          find out -name "chrome" -o -name "chromium" -o -name "headless_shell" | while read bin; do
             if [ -f "$bin" ]; then
               bin_dir=$(dirname "$bin")
               mkdir -p temp_chromium_zip/.cache/ms-playwright
+              # Copiar el directorio completo donde está el binario
               cp -r "$bin_dir" temp_chromium_zip/.cache/ms-playwright/ 2>/dev/null || true
-              echo "Copiado binario de: $bin"
+              echo "✓ Copiado binario de: $bin_dir"
             fi
           done
           
-          # Buscar y copiar librerías .so* a lib64 dentro de chromium zip
+          # Crear lib64 y copiar TODAS las librerías .so* SIN LIMITE
           mkdir -p temp_chromium_zip/.cache/ms-playwright/lib64
-          find out -name "*.so*" -type f | head -20 | while read lib; do
-            cp "$lib" temp_chromium_zip/.cache/ms-playwright/lib64/ 2>/dev/null || true
-          done
+          echo "Buscando TODAS las librerías .so*..."
           
-          # Asegurar permisos ejecutables
-          find temp_chromium_zip -name "chrome" -o -name "chromium" -o -name "headless_shell" | while read bin; do
-            if [ -f "$bin" ]; then
-              chmod +x "$bin"
-              echo "Haciendo ejecutable: $bin"
+          # 1. Primero copiar de out/lib64 (las que instalamos manualmente)
+          if [ -d "out/lib64" ]; then
+            echo "Copiando librerías de out/lib64..."
+            cp -r out/lib64/* temp_chromium_zip/.cache/ms-playwright/lib64/ 2>/dev/null || true
+            lib_count1=$(ls -1 temp_chromium_zip/.cache/ms-playwright/lib64/ | wc -l)
+            echo "✓ Copiadas $lib_count1 librerías de out/lib64"
+          fi
+          
+          # 2. Buscar librerías en todo el directorio out SIN LIMITE
+          echo "Buscando librerías en todo el directorio out..."
+          lib_count_before=$(ls -1 temp_chromium_zip/.cache/ms-playwright/lib64/ | wc -l)
+          find out -name "*.so*" -type f | while read lib; do
+            # Obtener solo el nombre del archivo
+            lib_name=$(basename "$lib")
+            # Copiar manteniendo el nombre original
+            cp "$lib" temp_chromium_zip/.cache/ms-playwright/lib64/"$lib_name" 2>/dev/null || true
+          done
+          lib_count_after=$(ls -1 temp_chromium_zip/.cache/ms-playwright/lib64/ | wc -l)
+          echo "✓ Agregadas $((lib_count_after - lib_count_before)) librerías adicionales"
+          
+          # 3. Buscar librerías en directorios específicos de playwright
+          if [ -d "out/.cache/ms-playwright" ]; then
+            echo "Buscando librerías en out/.cache/ms-playwright..."
+            find out/.cache/ms-playwright -name "*.so*" -type f | while read lib; do
+              lib_name=$(basename "$lib")
+              cp "$lib" temp_chromium_zip/.cache/ms-playwright/lib64/"$lib_name" 2>/dev/null || true
+            done
+          fi
+          
+          # Asegurar permisos ejecutables para todos los binarios
+          echo "Asegurando permisos ejecutables..."
+          find temp_chromium_zip -name "chrome" -o -name "chromium" -o -name "headless_shell" -o -name "*.so*" | while read file; do
+            if [ -f "$file" ]; then
+              chmod +x "$file" 2>/dev/null || true
             fi
           done
           
+          # Verificar resultados finales
+          echo "=== RESUMEN FINAL ==="
           echo "Estructura de temp_python_layer:"
-          ls -la temp_python_layer/ || true
+          ls -la temp_python_layer/ 2>/dev/null | head -10 || true
           
           echo "Estructura de temp_chromium_zip:"
-          ls -la temp_chromium_zip/.cache/ms-playwright/ || true
+          ls -la temp_chromium_zip/.cache/ms-playwright/ 2>/dev/null | head -10 || true
+          
+          echo "Librerías en lib64:"
+          ls -la temp_chromium_zip/.cache/ms-playwright/lib64/ 2>/dev/null | wc -l
+          echo "Total de librerías .so*: $(find temp_chromium_zip/.cache/ms-playwright/lib64/ -name "*.so*" -type f 2>/dev/null | wc -l || echo 0)"
 
       - name: Create Python layer zip
         run: |
