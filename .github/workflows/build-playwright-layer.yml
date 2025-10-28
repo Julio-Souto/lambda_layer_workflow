@@ -26,12 +26,13 @@ jobs:
               /opt/python/cp312-cp312/bin/pip wheel --no-deps --wheel-dir=/wheels -r /requirements.txt || true; \
               chown -R $(id -u):$(id -g) /wheels || true"
 
-      - name: Prepare out directory
+      - name: Prepare out dir
         run: |
           rm -rf out || true
-          mkdir -p out/python
-          mkdir -p out/lib64
+          mkdir -p out/python/lib/python3.12/site-packages
+          # Dar permisos completos al directorio out
           chmod -R 755 out || true
+          chown -R $USER:$USER out || true
 
       - name: Install system libraries separately
         run: |
@@ -150,20 +151,33 @@ jobs:
 
       - name: Zip layer with proper structure
         run: |
-          cd out
-          # Crear estructura: .cache/ms-playwright/{chromium, lib64}
-          mkdir -p .cache/ms-playwright
-          mv python .cache/ms-playwright/ || true
-          # Mover chromium y librerías a la estructura correcta
-          if [ -d .cache/ms-playwright/python/lib/python3.12/site-packages/playwright/driver ]; then
-            cp -r .cache/ms-playwright/python/lib/python3.12/site-packages/playwright/driver/* .cache/ms-playwright/ || true
-          fi
-          # Mover librerías a lib64
-          mkdir -p .cache/ms-playwright/lib64
-          find . -name "*.so*" -type f -exec cp {} .cache/ms-playwright/lib64/ \; 2>/dev/null || true
-          # Crear zip
-          zip -r ../playwright_layer_py312.zip .cache
+          # Crear estructura temporal con permisos adecuados
+          mkdir -p temp_layer/.cache/ms-playwright
+          
+          # Copiar todo el contenido de out a la estructura temporal
+          cp -r out/* temp_layer/.cache/ms-playwright/ || true
+          
+          # Buscar y copiar librerías .so* a lib64
+          mkdir -p temp_layer/.cache/ms-playwright/lib64
+          find out -name "*.so*" -type f -exec cp {} temp_layer/.cache/ms-playwright/lib64/ \; 2>/dev/null || true
+          
+          # Asegurar permisos ejecutables para chromium
+          find temp_layer -name "chrome" -o -name "chromium" -o -name "headless_shell" | while read bin; do
+            if [ -f "$bin" ]; then
+              chmod +x "$bin"
+              echo "Haciendo ejecutable: $bin"
+            fi
+          done
+          
+          # Crear zip desde temp_layer
+          cd temp_layer
+          zip -r ../playwright_layer_py312.zip .
           cd ..
+          
+          # Mostrar información del zip creado
+          ls -lh playwright_layer_py312.zip
+          echo "Estructura del zip:"
+          unzip -l playwright_layer_py312.zip | head -20
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
