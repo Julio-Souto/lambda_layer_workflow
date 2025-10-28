@@ -142,45 +142,80 @@ jobs:
           echo "=== playwright-install.log (tail) ==="
           [ -f out/playwright-install.log ] && tail -n 200 out/playwright-install.log || echo "no playwright-install.log"
 
-      - name: Fix permissions
-        run: |
-          find out -type d -exec chmod 755 {} \; || true
-          find out -type f -exec chmod 644 {} \; || true
-          find out -name "headless_shell" -o -name "chrome" -exec chmod 755 {} \; || true
-          find out/lib64 -name "*.so*" -exec chmod 755 {} \; 2>/dev/null || true
-
-      - name: Zip layer with proper structure
+      - name: Prepare directory structure for zipping
         run: |
           # Crear estructura temporal con permisos adecuados
-          mkdir -p temp_layer/.cache/ms-playwright
+          mkdir -p temp_python_layer
+          mkdir -p temp_chromium_zip
           
-          # Copiar todo el contenido de out a la estructura temporal
-          cp -r out/* temp_layer/.cache/ms-playwright/ || true
+          # Mover librerías Python a su carpeta (sin .cache)
+          if [ -d "out/python" ]; then
+            cp -r out/python temp_python_layer/
+            echo "Librerías Python copiadas a temp_python_layer/"
+          fi
           
-          # Buscar y copiar librerías .so* a lib64
-          mkdir -p temp_layer/.cache/ms-playwright/lib64
-          find out -name "*.so*" -type f -exec cp {} temp_layer/.cache/ms-playwright/lib64/ \; 2>/dev/null || true
+          # Mover chromium y librerías nativas a estructura separada
+          if [ -d "out/.cache" ]; then
+            cp -r out/.cache temp_chromium_zip/
+            echo "Chromium y librerías nativas copiadas a temp_chromium_zip/"
+          fi
           
-          # Asegurar permisos ejecutables para chromium
-          find temp_layer -name "chrome" -o -name "chromium" -o -name "headless_shell" | while read bin; do
+          # También buscar chromium en otros lugares
+          find out -name "chrome" -o -name "chromium" -o -name "headless_shell" | head -5 | while read bin; do
+            if [ -f "$bin" ]; then
+              bin_dir=$(dirname "$bin")
+              mkdir -p temp_chromium_zip/.cache/ms-playwright
+              cp -r "$bin_dir" temp_chromium_zip/.cache/ms-playwright/ 2>/dev/null || true
+              echo "Copiado binario de: $bin"
+            fi
+          done
+          
+          # Buscar y copiar librerías .so* a lib64 dentro de chromium zip
+          mkdir -p temp_chromium_zip/.cache/ms-playwright/lib64
+          find out -name "*.so*" -type f | head -20 | while read lib; do
+            cp "$lib" temp_chromium_zip/.cache/ms-playwright/lib64/ 2>/dev/null || true
+          done
+          
+          # Asegurar permisos ejecutables
+          find temp_chromium_zip -name "chrome" -o -name "chromium" -o -name "headless_shell" | while read bin; do
             if [ -f "$bin" ]; then
               chmod +x "$bin"
               echo "Haciendo ejecutable: $bin"
             fi
           done
           
-          # Crear zip desde temp_layer
-          cd temp_layer
-          zip -r ../playwright_layer_py312.zip .
-          cd ..
+          echo "Estructura de temp_python_layer:"
+          ls -la temp_python_layer/ || true
           
-          # Mostrar información del zip creado
-          ls -lh playwright_layer_py312.zip
-          echo "Estructura del zip:"
-          unzip -l playwright_layer_py312.zip | head -20
+          echo "Estructura de temp_chromium_zip:"
+          ls -la temp_chromium_zip/.cache/ms-playwright/ || true
 
-      - name: Upload artifact
+      - name: Create Python layer zip
+        run: |
+          cd temp_python_layer
+          zip -r ../playwright_python_layer.zip .
+          cd ..
+          echo "Python layer zip creado"
+          ls -lh playwright_python_layer.zip
+
+      - name: Create Chromium binary zip
+        run: |
+          cd temp_chromium_zip
+          zip -r ../chromium_binary.zip .
+          cd ..
+          echo "Chromium binary zip creado"
+          ls -lh chromium_binary.zip
+          echo "Contenido del chromium zip:"
+          unzip -l chromium_binary.zip | head -20
+
+      - name: Upload Python layer artifact
         uses: actions/upload-artifact@v4
         with:
-          name: playwright-layer-py312
-          path: playwright_layer_py312.zip
+          name: playwright-python-layer
+          path: playwright_python_layer.zip
+
+      - name: Upload Chromium binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: chromium-binary
+          path: chromium_binary.zip
