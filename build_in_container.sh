@@ -109,6 +109,57 @@ echo "Dependencias del sistema instaladas (o intentadas). Reintentando instalaci
 # Evitar que Playwright intente ejecutar apt-get como fallback (si aún así lo hace)
 export PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS=1
 
+# Crear directorio para configuraciones adicionales
+mkdir -p "$OUT/etc"
+mkdir -p "$OUT/sandbox"
+
+# Configurar variables de entorno críticas para Lambda
+cat > "$OUT/lambda_env.sh" << 'EOF'
+#!/bin/bash
+# Variables de entorno para Lambda
+export PLAYWRIGHT_BROWSERS_PATH=/opt/.cache/ms-playwright
+export LD_LIBRARY_PATH=/opt/lib:/var/lang/lib:/lib64:/usr/lib64:/var/runtime:/var/runtime/lib:/var/task:/var/task/lib
+export FONTCONFIG_PATH=/etc/fonts
+export FONTCONFIG_FILE=/etc/fonts/fonts.conf
+export FONTCONFIG_SYSROOT=/opt
+export PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
+export PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=true
+# Deshabilitar completamente la validación de sandbox
+export PLAYWRIGHT_DISABLE_SANDBOX=1
+export QTWEBENGINE_DISABLE_SANDBOX=1
+EOF
+
+chmod +x "$OUT/lambda_env.sh"
+
+# Crear un script de diagnóstico mejorado
+cat > "$OUT/diagnose_chromium.sh" << 'EOF'
+#!/bin/bash
+echo "=== Chromium Diagnosis ==="
+echo "LD_LIBRARY_PATH: $LD_LIBRARY_PATH"
+echo "PLAYWRIGHT_BROWSERS_PATH: $PLAYWRIGHT_BROWSERS_PATH"
+
+# Buscar chromium
+find /opt -name "chrome" -o -name "chromium" -o -name "headless_shell" 2>/dev/null | while read bin; do
+  echo "Found: $bin"
+  if [ -x "$bin" ]; then
+    echo "  Executable: YES"
+    echo "  Version attempt:"
+    $bin --version 2>&1 | head -1 || echo "  Failed to get version"
+  else
+    echo "  Executable: NO"
+    chmod +x "$bin" 2>/dev/null && echo "  Fixed permissions" || echo "  Could not fix permissions"
+  fi
+  echo "  LDD output:"
+  ldd "$bin" 2>&1 | grep -E "not found|=>" | head -10
+  echo "---"
+done
+
+echo "=== Library check ==="
+find /opt/lib -name "*.so*" 2>/dev/null | wc -l | xargs echo "Total .so files in /opt/lib:"
+EOF
+
+chmod +x "$OUT/diagnose_chromium.sh"
+
 # Usamos el python apropiado (PY_CMD ya definido) y PYTHONPATH apuntando al target site-packages
 # Ejecutar instalación de navegadores SIN --with-deps (ya instalamos deps con yum)
 PYTHONPATH="$PYTHONPATH" PLAYWRIGHT_BROWSERS_PATH="$PLAYWRIGHT_BROWSERS_PATH" \
@@ -215,4 +266,40 @@ done
 cp -v /tmp/playwright-install.log "$OUT/" 2>/dev/null || true
 chmod -R a+rwX "$OUT" || true
 echo "Build finished: $(date)" | tee -a "$LOG"
+
+# Verificación final y creación de archivo de configuración
+echo "=== Final setup ==="
+
+# Crear un archivo de configuración para Lambda
+cat > "$OUT/chromium-config.json" << EOF
+{
+  "chromium_args": [
+    "--no-sandbox",
+    "--disable-setuid-sandbox", 
+    "--disable-seccomp-filter-sandbox",
+    "--disable-namespace-sandbox",
+    "--disable-custom-sandbox",
+    "--disable-dev-shm-usage",
+    "--disable-gpu",
+    "--single-process",
+    "--no-zygote",
+    "--no-first-run",
+    "--headless=new",
+    "--remote-debugging-port=0",
+    "--disable-extensions",
+    "--disable-background-networking",
+    "--disable-features=VizDisplayCompositor,AudioServiceOutOfProcess,Translate",
+    "--disk-cache-dir=/tmp/chromium-cache",
+    "--user-data-dir=/tmp/chromium-user-data"
+  ],
+  "environment": {
+    "ld_library_path": "/opt/lib:/var/lang/lib:/lib64:/usr/lib64:/var/runtime:/var/runtime/lib:/var/task:/var/task/lib",
+    "playwright_browsers_path": "/opt/.cache/ms-playwright",
+    "fontconfig_path": "/etc/fonts"
+  }
+}
+EOF
+
+echo "Final setup completed at: $(date)" | tee -a "$LOG"
+
 exit 0

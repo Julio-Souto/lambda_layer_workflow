@@ -109,6 +109,111 @@ jobs:
               ls -1 /out/lib64/ | wc -l
             '
 
+      - name: Install additional critical libraries for Chromium
+        run: |
+          set -eo pipefail
+          echo "Installing ADDITIONAL critical libraries for Chromium sandbox issues..."
+          
+          docker run --rm \
+            -v "${{ github.workspace }}/out":/out \
+            public.ecr.aws/amazonlinux/amazonlinux:2023 \
+            bash -c '
+              # Instalar librerías adicionales críticas para el sandboxing
+              dnf install -y \
+                libseccomp \
+                libcap \
+                policycoreutils \
+                selinux-policy-targeted \
+                audit-libs \
+                libapparmor \
+                bubblewrap \
+                fuse-overlayfs \
+                slirp4netns \
+                shadow-utils \
+                procps-ng \
+                iproute \
+                iptables \
+                dbus-daemon \
+                systemd-container
+              
+              # Copiar librerías adicionales específicas para sandbox
+              mkdir -p /out/lib64/sandbox
+              
+              # Librerías críticas para el sandbox de Chromium
+              SANDBOX_LIBS=(
+                libseccomp.so.2
+                libcap.so.2
+                libaudit.so.1
+                libapparmor.so.1
+                libselinux.so.1
+                libpcre2-8.so.0
+                libpcre.so.1
+              )
+              
+              for lib in "${SANDBOX_LIBS[@]}"; do
+                for path in /usr/lib64 /lib64 /usr/lib; do
+                  if [ -f "$path/$lib" ]; then
+                    cp -v "$path/$lib" /out/lib64/ 2>/dev/null && break
+                  fi
+                done
+              done
+              
+              # Crear estructura de directorios necesaria para sandbox
+              mkdir -p /out/sandbox
+              echo "Additional sandbox libraries installed"
+            '
+
+      - name: Create Chromium launch wrapper script
+        run: |
+          cat > out/chromium-launcher.sh << 'EOF'
+          #!/bin/bash
+          # Wrapper script para Chromium en Lambda - Sin sandbox
+          export LD_LIBRARY_PATH=/opt/lib:/var/lang/lib:/lib64:/usr/lib64:/var/runtime:/var/runtime/lib:/var/task:/var/task/lib
+          export FONTCONFIG_PATH=/etc/fonts
+          export FONTCONFIG_FILE=/etc/fonts/fonts.conf
+          
+          # Encontrar el binario de chromium
+          if [ -f "/opt/.cache/ms-playwright/chromium-*/chrome-linux/chrome" ]; then
+            CHROMIUM_BIN=$(find /opt/.cache/ms-playwright -name "chrome" -type f | head -1)
+          elif [ -f "/opt/.cache/ms-playwright/chromium-*/chrome-linux/headless_shell" ]; then
+            CHROMIUM_BIN=$(find /opt/.cache/ms-playwright -name "headless_shell" -type f | head -1)
+          else
+            CHROMIUM_BIN=$(find /opt/.cache/ms-playwright -name "chrome" -o -name "headless_shell" -type f | head -1)
+          fi
+          
+          if [ -z "$CHROMIUM_BIN" ]; then
+            echo "ERROR: Chromium binary not found" >&2
+            exit 1
+          fi
+          
+          # Asegurar permisos de ejecución
+          chmod +x "$CHROMIUM_BIN" 2>/dev/null || true
+          
+          # Ejecutar Chromium sin sandbox y con arguments mínimos
+          exec "$CHROMIUM_BIN" \
+            --no-sandbox \
+            --disable-setuid-sandbox \
+            --disable-seccomp-filter-sandbox \
+            --disable-namespace-sandbox \
+            --disable-custom-sandbox \
+            --disable-dev-shm-usage \
+            --disable-gpu \
+            --single-process \
+            --no-zygote \
+            --no-first-run \
+            --headless=new \
+            --remote-debugging-port=0 \
+            --disable-extensions \
+            --disable-background-networking \
+            --disable-features=VizDisplayCompositor,AudioServiceOutOfProcess,Translate \
+            --disk-cache-dir=/tmp/chromium-cache \
+            --user-data-dir=/tmp/chromium-user-data \
+            "$@"
+          EOF
+          
+          chmod +x out/chromium-launcher.sh
+          echo "Chromium launcher script created"
+          
       - name: Download Playwright browsers (Ubuntu)
         run: |
           echo "Downloading Playwright browsers inside Ubuntu (apt available)..."
