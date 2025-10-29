@@ -18,11 +18,9 @@ echo "Build script start: $(date)" | tee -a "$LOG"
 # Instalar utilidades y paquetes base (tolerante a fallos)
 echo "Installing base packages..." | tee -a "$LOG"
 # En la imagen lambda: usar yum (amazon linux)
-yum -y update || true
-yum -y install -y which findutils tar xz unzip curl fontconfig freetype freetype-devel glibc-langpack-en || true
-
-# Paquetes recomendados para Chromium
-yum -y install -y nspr nss nss-util dbus-glib atk at-spi2-atk expat cairo libX11 libXcomposite libXcursor libXdamage libXrandr libXtst libXrender libXfixes libXext libXScrnSaver libxcb libxshmfence libxkbcommon mesa-libgbm libdrm alsa-lib gtk3 pango cups-libs || true
+microdnf update -y || true
+microdnf install -y which findutils tar xz unzip curl fontconfig freetype freetype-devel glibc-langpack-en || true
+microdnf install -y nspr nss nss-util dbus-glib atk at-spi2-atk expat cairo libX11 libXcomposite libXcursor libXdamage libXrandr libXtst libXrender libXfixes libXext libXScrnSaver libxcb libxshmfence libxkbcommon mesa-libgbm libdrm alsa-lib gtk3 pango cups-libs || true
 
 # Detectar python 3.12 disponible en la imagen
 PY_CMD=""
@@ -67,42 +65,11 @@ echo "Instalando dependencias del sistema requeridas por Chromium (yum)..." | te
 
 # Lista recomendada de paquetes para Amazon Linux / Lambda (AL2023)
 # Nota: algunos paquetes pueden ya estar instalados; usamos -y y toleramos fallos.
-yum -y update || true
-yum -y install -y \
-  alsa-lib \
-  atk \
-  at-spi2-atk \
-  dbus-glib \
-  cups-libs \
-  freetype \
-  fontconfig \
-  gtk3 \
-  libX11 \
-  libXcomposite \
-  libXcursor \
-  libXdamage \
-  libXrandr \
-  libXtst \
-  libXrender \
-  libXfixes \
-  libXext \
-  libXScrnSaver || true \
-  libxcb \
-  libxshmfence \
-  libxkbcommon \
-  mesa-libgbm \
-  libdrm \
-  nspr \
-  nss \
-  nss-util \
-  systemd-libs \
-  pango \
-  cairo \
-  alsa-lib \
-  pulseaudio-libs || true
+microdnf update -y || true
+microdnf install -y alsa-lib atk at-spi2-atk dbus-glib cups-libs freetype fontconfig gtk3 libX11 libXcomposite libXcursor libXdamage libXrandr libXtst libXrender libXfixes libXext libXScrnSaver libxcb libxshmfence libxkbcommon mesa-libgbm libdrm nspr nss nss-util systemd-libs pango cairo alsa-lib pulseaudio-libs || true
 
-# También instalamos utilidades que Playwright usa al descargar
-yum -y install -y curl tar gzip unzip xz || true
+# EN LUGAR de la línea 105, USA:
+microdnf install -y curl tar gzip unzip xz || true
 
 echo "Dependencias del sistema instaladas (o intentadas). Reintentando instalación de navegadores..." | tee -a "$LOG"
 
@@ -162,6 +129,7 @@ chmod +x "$OUT/diagnose_chromium.sh"
 
 # Usamos el python apropiado (PY_CMD ya definido) y PYTHONPATH apuntando al target site-packages
 # Ejecutar instalación de navegadores SIN --with-deps (ya instalamos deps con yum)
+export PYTHONPATH=""
 PYTHONPATH="$PYTHONPATH" PLAYWRIGHT_BROWSERS_PATH="$PLAYWRIGHT_BROWSERS_PATH" \
   $PY_CMD -m playwright install chromium 2>&1 | tee /tmp/playwright-install.log || true
 

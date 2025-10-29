@@ -213,7 +213,7 @@ jobs:
           
           chmod +x out/chromium-launcher.sh
           echo "Chromium launcher script created"
-          
+
       - name: Download Playwright browsers (Ubuntu)
         run: |
           echo "Downloading Playwright browsers inside Ubuntu (apt available)..."
@@ -243,15 +243,38 @@ jobs:
             echo "build_in_container.sh not found!"
             exit 1
           fi
-
-      - name: Run build script inside python:3.12 lambda image
+        
+      - name: Fix container tools before build script
         run: |
+          # Pre-instalar herramientas críticas en el contenedor Lambda antes de ejecutar el build script
           docker run --rm --entrypoint /bin/bash \
             -v "${{ github.workspace }}":/workspace \
             -v "${{ github.workspace }}/out":/out \
             -w /workspace \
             public.ecr.aws/lambda/python:3.12 \
-            -c "/workspace/build_in_container.sh"
+            -c "
+            microdnf update -y
+            microdnf install -y findutils which tar xz unzip curl fontconfig freetype freetype-devel glibc-langpack-en
+            microdnf install -y nspr nss nss-util dbus-glib atk at-spi2-atk expat cairo
+            microdnf install -y libX11 libXcomposite libXcursor libXdamage libXrandr libXtst libXrender
+            microdnf install -y libXfixes libXext libXScrnSaver libxcb libxshmfence libxkbcommon
+            microdnf install -y mesa-libgbm libdrm alsa-lib gtk3 pango cups-libs
+            microdnf install -y systemd-libs pulseaudio-libs
+            echo 'Base tools installed in container'
+            "
+
+      - name: Run build script inside python:3.12 lambda image
+        run: |
+          # Primero instalar herramientas básicas, luego ejecutar el script
+          docker run --rm --entrypoint /bin/bash \
+            -v "${{ github.workspace }}":/workspace \
+            -v "${{ github.workspace }}/out":/out \
+            -w /workspace \
+            public.ecr.aws/lambda/python:3.12 \
+            -c "
+            microdnf install -y findutils which || true
+            /workspace/build_in_container.sh
+            "
 
       - name: Show out contents (debug)
         run: |
